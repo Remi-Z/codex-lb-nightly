@@ -18,7 +18,7 @@ const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: false,
   upstreamStreamTransport: "default",
   preferEarlierResetAccounts: true,
-  preferEarlierResetWindow: "primary",
+  preferEarlierResetWindow: "secondary",
   routingStrategy: "usage_weighted",
   openaiCacheAffinityMaxAgeSeconds: 300,
   dashboardSessionTtlSeconds: 43200,
@@ -46,7 +46,7 @@ describe("RoutingSettings", () => {
       stickyThreadsEnabled: false,
       upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
-      preferEarlierResetWindow: "primary",
+      preferEarlierResetWindow: "secondary",
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 180,
       dashboardSessionTtlSeconds: 43200,
@@ -71,7 +71,7 @@ describe("RoutingSettings", () => {
       stickyThreadsEnabled: false,
       upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
-      preferEarlierResetWindow: "primary",
+      preferEarlierResetWindow: "secondary",
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 240,
       dashboardSessionTtlSeconds: 43200,
@@ -101,7 +101,7 @@ describe("RoutingSettings", () => {
       stickyThreadsEnabled: true,
       upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
-      preferEarlierResetWindow: "primary",
+      preferEarlierResetWindow: "secondary",
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 300,
       dashboardSessionTtlSeconds: 43200,
@@ -155,13 +155,13 @@ describe("RoutingSettings", () => {
     render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.click(screen.getByRole("combobox", { name: "Reset preference window" }));
-    await user.click(await screen.findByText("Weekly quota"));
+    await user.click(await screen.findByText("5h quota"));
 
     expect(onSave).toHaveBeenCalledWith({
       stickyThreadsEnabled: false,
       upstreamStreamTransport: "default",
       preferEarlierResetAccounts: true,
-      preferEarlierResetWindow: "secondary",
+      preferEarlierResetWindow: "primary",
       routingStrategy: "usage_weighted",
       openaiCacheAffinityMaxAgeSeconds: 300,
       dashboardSessionTtlSeconds: 43200,
