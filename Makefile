@@ -1,5 +1,6 @@
 PYTEST_ARGS := -q -ra -o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=true --timeout=180 --timeout-method=thread --durations=20
 POSTGRES_TEST_DATABASE_URL ?= postgresql+asyncpg://codex_lb:codex_lb@127.0.0.1:5432/codex_lb
+SHELL := /bin/bash
 
 .PHONY: help
 help:
@@ -115,6 +116,7 @@ helm-template:
 	helm template codex-lb deploy/helm/codex-lb/ -f deploy/helm/codex-lb/values-prod.yaml --set externalSecrets.secretStoreRef.name=test-store > /dev/null
 
 helm-kubeconform:
+	set -o pipefail; \
 	for version in 1.32.0 1.35.0; do \
 	  helm template codex-lb deploy/helm/codex-lb/ \
 	    -f deploy/helm/codex-lb/values-prod.yaml \
