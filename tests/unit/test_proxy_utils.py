@@ -6139,6 +6139,170 @@ async def test_pop_replayable_precreated_websocket_request_replays_injected_anch
     assert json.loads(pending_request.request_text) == fresh_payload
 
 
+@pytest.mark.asyncio
+async def test_websocket_full_resend_conflicts_with_visible_pending() -> None:
+    pending_lock = anyio.Lock()
+    pending = deque(
+        [
+            proxy_service._WebSocketRequestState(
+                request_id="ws_started",
+                model="gpt-5.1",
+                service_tier=None,
+                reasoning_effort=None,
+                api_key_reservation=None,
+                started_at=0.0,
+                response_id="resp_started",
+                awaiting_response_created=False,
+                downstream_visible=True,
+                input_item_count=1,
+            )
+        ]
+    )
+    full_resend = proxy_service._WebSocketRequestState(
+        request_id="ws_full_resend",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id=None,
+        input_item_count=proxy_service._WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,
+    )
+
+    assert (
+        await proxy_service._websocket_full_resend_conflicts_with_visible_pending(
+            full_resend,
+            pending,
+            pending_lock=pending_lock,
+            codex_session_affinity=True,
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_full_resend_allows_fresh_multi_item_request() -> None:
+    pending_lock = anyio.Lock()
+    pending = deque(
+        [
+            proxy_service._WebSocketRequestState(
+                request_id="ws_started",
+                model="gpt-5.1",
+                service_tier=None,
+                reasoning_effort=None,
+                api_key_reservation=None,
+                started_at=0.0,
+                response_id="resp_started",
+                awaiting_response_created=False,
+                downstream_visible=True,
+                input_item_count=1,
+            )
+        ]
+    )
+    fresh_request = proxy_service._WebSocketRequestState(
+        request_id="ws_fresh_multi_item",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id=None,
+        input_item_count=2,
+    )
+
+    assert (
+        await proxy_service._websocket_full_resend_conflicts_with_visible_pending(
+            fresh_request,
+            pending,
+            pending_lock=pending_lock,
+            codex_session_affinity=True,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_full_resend_allows_pending_before_downstream_visible() -> None:
+    pending_lock = anyio.Lock()
+    pending = deque(
+        [
+            proxy_service._WebSocketRequestState(
+                request_id="ws_started",
+                model="gpt-5.1",
+                service_tier=None,
+                reasoning_effort=None,
+                api_key_reservation=None,
+                started_at=0.0,
+                response_id="resp_started",
+                awaiting_response_created=False,
+                downstream_visible=False,
+                input_item_count=1,
+            )
+        ]
+    )
+    full_resend_shaped_request = proxy_service._WebSocketRequestState(
+        request_id="ws_full_resend_shaped",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id=None,
+        input_item_count=proxy_service._WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,
+    )
+
+    assert (
+        await proxy_service._websocket_full_resend_conflicts_with_visible_pending(
+            full_resend_shaped_request,
+            pending,
+            pending_lock=pending_lock,
+            codex_session_affinity=True,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_full_resend_allows_explicit_previous_response_id() -> None:
+    pending_lock = anyio.Lock()
+    pending = deque(
+        [
+            proxy_service._WebSocketRequestState(
+                request_id="ws_started",
+                model="gpt-5.1",
+                service_tier=None,
+                reasoning_effort=None,
+                api_key_reservation=None,
+                started_at=0.0,
+                response_id="resp_started",
+                awaiting_response_created=False,
+                downstream_visible=True,
+                input_item_count=1,
+            )
+        ]
+    )
+    anchored_followup = proxy_service._WebSocketRequestState(
+        request_id="ws_anchored",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        previous_response_id="resp_started",
+        input_item_count=proxy_service._WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,
+    )
+
+    assert (
+        await proxy_service._websocket_full_resend_conflicts_with_visible_pending(
+            anchored_followup,
+            pending,
+            pending_lock=pending_lock,
+            codex_session_affinity=True,
+        )
+        is False
+    )
+
+
 def test_slim_response_create_payload_rewrites_top_level_historical_input_image():
     payload: dict[str, JsonValue] = {
         "type": "response.create",
@@ -10102,7 +10266,7 @@ def test_http_bridge_should_rollover_after_context_overflow():
     assert proxy_service._http_bridge_should_rollover_after_context_overflow(unrelated_error) is False
 
 
-def test_maybe_rewrite_websocket_previous_response_not_found_leaves_non_previous_request_unchanged():
+def test_maybe_rewrite_websocket_previous_response_not_found_masks_lost_local_anchor():
     request_state = proxy_service._WebSocketRequestState(
         request_id="ws_req_plain",
         model="gpt-5.1",
@@ -10139,9 +10303,14 @@ def test_maybe_rewrite_websocket_previous_response_not_found_leaves_non_previous
     )
 
     assert upstream_control.reconnect_requested is False
-    assert rewritten_event_type == original_event_type
-    assert rewritten_payload == original_payload
-    assert rewritten_text == original_text
+    assert rewritten_event_type == "response.failed"
+    assert rewritten_payload is not None
+    response_payload = cast(dict[str, JsonValue], rewritten_payload.get("response"))
+    error_payload = cast(dict[str, JsonValue], response_payload.get("error"))
+    assert error_payload["code"] == "stream_incomplete"
+    assert error_payload["message"] == "Upstream websocket closed before response.completed"
+    assert "previous_response_not_found" not in rewritten_text
+    assert "resp_any" not in rewritten_text
 
 
 def test_sanitize_websocket_connect_failure_rewrites_previous_response_not_found(monkeypatch, caplog):
@@ -11096,6 +11265,65 @@ async def test_compact_responses_records_transient_error_for_generic_upstream_fa
     assert exc.status_code == 502
     assert _proxy_error_code(exc) == "upstream_unavailable"
     record_error.assert_awaited_once_with(account)
+    record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_compact_previous_response_not_found_is_masked_without_account_penalty(monkeypatch, caplog):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_compact_prev_missing")
+    record_error = AsyncMock()
+    record_success = AsyncMock()
+    counter = _ObservedCounter()
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_service, "continuity_fail_closed_total", counter, raising=False)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service._load_balancer, "record_error", record_error)
+    monkeypatch.setattr(service._load_balancer, "record_success", record_success)
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
+
+    async def failing_compact(payload, headers, access_token, account_id):
+        del payload, headers, access_token, account_id
+        error_payload = openai_error(
+            "invalid_request_error",
+            "Previous response with id 'resp_compact_missing' not found.",
+            error_type="invalid_request_error",
+        )
+        error_payload["error"]["param"] = "previous_response_id"
+        raise proxy_module.ProxyResponseError(400, error_payload)
+
+    monkeypatch.setattr(proxy_service, "core_compact_responses", failing_compact)
+
+    payload = ResponsesCompactRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": []})
+
+    caplog.set_level(logging.WARNING, logger="app.modules.proxy.service")
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        await service.compact_responses(payload, {"session_id": "sid-compact"})
+
+    exc = _assert_proxy_response_error(exc_info.value)
+    assert exc.status_code == 502
+    assert _proxy_error_code(exc) == "stream_incomplete"
+    assert _proxy_error_message(exc) == "Upstream websocket closed before response.completed"
+    assert "resp_compact_missing" not in json.dumps(exc.payload)
+    assert request_logs.calls[0]["error_code"] == "stream_incomplete"
+    assert "continuity_fail_closed surface=compact reason=previous_response_not_found" in caplog.text
+    assert "resp_compact_missing" not in caplog.text
+    assert counter.samples == [
+        {
+            "labels": {"surface": "compact", "reason": "previous_response_not_found"},
+            "value": 1.0,
+        }
+    ]
+    record_error.assert_not_awaited()
     record_success.assert_not_awaited()
 
 

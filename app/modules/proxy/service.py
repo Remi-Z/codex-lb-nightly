@@ -657,6 +657,8 @@ class ProxyService:
         fresh_upstream_request_text: str | None = None
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
+        durable_full_resend_anchor_count: int | None = None
+        durable_full_resend_anchor_fingerprint: str | None = None
         if durable_lookup is not None:
             bridge_session_key = _HTTPBridgeSessionKey(
                 durable_lookup.canonical_kind,
@@ -669,13 +671,18 @@ class ProxyService:
                 api_key=api_key,
             )
             forwards_to_active_owner = await self._http_bridge_can_forward_to_active_owner(durable_lookup)
+            durable_anchor_trimmable = _input_prefix_matches_stored_context(
+                payload.input,
+                stored_count=durable_lookup.latest_input_item_count or 0,
+                stored_fingerprint=durable_lookup.latest_input_full_fingerprint,
+            )
             if (
                 not live_local_session_exists
                 and not forwards_to_active_owner
                 and payload.previous_response_id is None
                 and bridge_session_key.strength == "hard"
                 and durable_lookup.latest_response_id is not None
-                and not _http_bridge_payload_looks_like_full_resend(payload)
+                and (not _http_bridge_payload_looks_like_full_resend(payload) or durable_anchor_trimmable)
             ):
                 effective_payload = payload.model_copy(
                     update={"previous_response_id": durable_lookup.latest_response_id}
@@ -698,6 +705,21 @@ class ProxyService:
                     cache_key_family=bridge_session_key.affinity_kind,
                     model_class=_extract_model_class(payload.model) if payload.model else None,
                 )
+                if _http_bridge_payload_looks_like_full_resend(payload):
+                    durable_full_resend_anchor_count = durable_lookup.latest_input_item_count
+                    durable_full_resend_anchor_fingerprint = durable_lookup.latest_input_full_fingerprint
+                    _log_http_bridge_event(
+                        "durable_full_resend_anchor_injected",
+                        bridge_session_key,
+                        account_id=None,
+                        model=payload.model,
+                        detail=(
+                            f"response_id={durable_lookup.latest_response_id} "
+                            f"stored_items={durable_full_resend_anchor_count}"
+                        ),
+                        cache_key_family=bridge_session_key.affinity_kind,
+                        model_class=_extract_model_class(payload.model) if payload.model else None,
+                    )
         if effective_payload.previous_response_id is not None and isinstance(effective_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], effective_payload.input)
             trimmed_input_items = _trim_http_bridge_previous_response_input_items(previous_response_input_items)
@@ -950,6 +972,15 @@ class ProxyService:
                             session.last_used_at = time.monotonic()
                 return
         session = session_or_forward
+        if (
+            durable_full_resend_anchor_count is not None
+            and durable_full_resend_anchor_fingerprint is not None
+            and durable_lookup is not None
+            and durable_lookup.latest_response_id is not None
+        ):
+            session.last_completed_response_id = durable_lookup.latest_response_id
+            session.last_completed_input_count = durable_full_resend_anchor_count
+            session.last_completed_input_prefix_fingerprint = durable_full_resend_anchor_fingerprint
         # --- Session-level previous_response_id injection ---
         # If the client didn't send previous_response_id and the durable
         # lookup didn't inject one, but this bridge session is carrying
@@ -971,13 +1002,10 @@ class ProxyService:
         incoming_input_preview = effective_payload.input
         stored_count_preview = session.last_completed_input_count
         stored_fingerprint_preview = session.last_completed_input_prefix_fingerprint
-        session_anchor_trimmable = (
-            stored_count_preview > 0
-            and stored_fingerprint_preview is not None
-            and isinstance(incoming_input_preview, list)
-            and len(incoming_input_preview) > stored_count_preview
-            and _fingerprint_input_items(cast(list[JsonValue], incoming_input_preview)[:stored_count_preview])
-            == stored_fingerprint_preview
+        session_anchor_trimmable = _input_prefix_matches_stored_context(
+            incoming_input_preview,
+            stored_count=stored_count_preview,
+            stored_fingerprint=stored_fingerprint_preview,
         )
         if (
             session.codex_session
@@ -1326,17 +1354,13 @@ class ProxyService:
                 block_event_type = _event_type_from_payload(None, block_payload)
                 if request_state.latency_first_token_ms is None and block_event_type in _TEXT_DELTA_EVENT_TYPES:
                     request_state.latency_first_token_ms = int((time.monotonic() - request_state.started_at) * 1000)
-                if (
-                    not propagate_http_errors
-                    and request_state.previous_response_id is not None
-                    and _is_previous_response_not_found_error(
-                        code=_normalize_error_code(
-                            _websocket_event_error_code(block_event_type, block_payload),
-                            _websocket_event_error_type(block_event_type, block_payload),
-                        ),
-                        param=_websocket_event_error_param(block_event_type, block_payload),
-                        message=_websocket_event_error_message(block_event_type, block_payload),
-                    )
+                if not propagate_http_errors and _is_previous_response_not_found_error(
+                    code=_normalize_error_code(
+                        _websocket_event_error_code(block_event_type, block_payload),
+                        _websocket_event_error_type(block_event_type, block_payload),
+                    ),
+                    param=_websocket_event_error_param(block_event_type, block_payload),
+                    message=_websocket_event_error_message(block_event_type, block_payload),
                 ):
                     session.upstream_control.reconnect_requested = True
                     request_state.error_http_status_override = 502
@@ -1752,6 +1776,22 @@ class ProxyService:
                         log_status = "success"
                         return response
                     except ProxyResponseError as exc:
+                        compact_continuity_error = _compact_previous_response_not_found_error(exc)
+                        if compact_continuity_error is not None:
+                            await self._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            _record_continuity_fail_closed(
+                                surface="compact",
+                                reason="previous_response_not_found",
+                                previous_response_id=None,
+                                session_id=_owner_lookup_session_id_from_headers(headers),
+                                upstream_error_code=_proxy_response_error_code(exc),
+                            )
+                            raise compact_continuity_error from exc
                         if exc.status_code == 401:
                             if refresh_retry_used:
                                 await self._settle_compact_api_key_usage(
@@ -3184,6 +3224,32 @@ class ProxyService:
                         payload = None
                         continue
 
+                if request_state is not None and await _websocket_full_resend_conflicts_with_visible_pending(
+                    request_state,
+                    pending_requests,
+                    pending_lock=pending_lock,
+                    codex_session_affinity=codex_session_affinity,
+                ):
+                    logger.warning(
+                        "Rejecting websocket full resend while prior response is visible request_id=%s input_items=%s",
+                        request_state.request_log_id or request_state.request_id,
+                        request_state.input_item_count,
+                    )
+                    await self._release_websocket_reservation(request_state.api_key_reservation)
+                    await self._emit_websocket_terminal_error(
+                        websocket,
+                        client_send_lock=client_send_lock,
+                        request_state=request_state,
+                        error_code="stream_incomplete",
+                        error_message="Previous response is still streaming; retry after the terminal frame",
+                        error_type="server_error",
+                        downstream_activity=downstream_activity,
+                    )
+                    request_state = None
+                    text_data = None
+                    payload = None
+                    continue
+
                 if request_state is not None and not request_state_registered:
                     try:
                         await self._acquire_request_state_response_create_admission(
@@ -4390,6 +4456,7 @@ class ProxyService:
             force_durable_takeover = False
             missing_turn_state_alias = False
             used_session_header_fallback = False
+            session_to_return_after_close: _HTTPBridgeSession | None = None
             preserve_durable_canonical_key = (
                 incoming_turn_state is not None
                 and forwarded_affinity is None
@@ -4937,11 +5004,12 @@ class ProxyService:
                                         if previous_session.request_model
                                         else None,
                                     )
-                                    return previous_session
+                                    session_to_return_after_close = previous_session
                             else:
                                 self._http_bridge_previous_response_index.pop(previous_alias_key, None)
                     if (
-                        previous_response_id is not None
+                        session_to_return_after_close is None
+                        and previous_response_id is not None
                         and not used_session_header_fallback
                         and not allow_previous_response_recovery_rebind
                         and durable_lookup is None
@@ -5062,6 +5130,9 @@ class ProxyService:
 
             for stale_session in sessions_to_close:
                 await self._close_http_bridge_session(stale_session)
+
+            if session_to_return_after_close is not None:
+                return session_to_return_after_close
 
             if owner_forward is not None:
                 return owner_forward
@@ -5340,6 +5411,9 @@ class ProxyService:
         self,
         session: "_HTTPBridgeSession",
         response_id: str,
+        *,
+        input_item_count: int | None = None,
+        input_full_fingerprint: str | None = None,
     ) -> None:
         stripped_response_id = response_id.strip()
         if not stripped_response_id:
@@ -5359,6 +5433,8 @@ class ProxyService:
                     owner_epoch=session.durable_owner_epoch,
                     response_id=stripped_response_id,
                     lease_ttl_seconds=_http_bridge_durable_lease_ttl_seconds(),
+                    input_item_count=input_item_count,
+                    input_full_fingerprint=input_full_fingerprint,
                 )
             except Exception:
                 logger.warning("Failed to persist durable HTTP bridge previous_response_id alias", exc_info=True)
@@ -6323,6 +6399,7 @@ class ProxyService:
                     or is_missing_tool_output_event,
                     previous_response_id_hint=previous_response_id_hint,
                     error_message=error_message,
+                    allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                 )
                 release_create_gate = False
             else:
@@ -6354,6 +6431,7 @@ class ProxyService:
                     or is_missing_tool_output_event,
                     previous_response_id_hint=previous_response_id_hint,
                     error_message=error_message,
+                    allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                     allow_precreated_terminal_fallback=event_type
                     in {
                         "response.failed",
@@ -6370,6 +6448,7 @@ class ProxyService:
                             session.pending_requests,
                             previous_response_id_hint=previous_response_id_hint,
                             error_message=error_message,
+                            allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                         ),
                     )
                     if not grouped_previous_response_request_states and is_missing_tool_output_event:
@@ -6477,11 +6556,7 @@ class ProxyService:
             )
             event_block = f"data: {rewritten_text}\n\n"
 
-        if (
-            status_request_state is not None
-            and status_request_state.previous_response_id is not None
-            and is_previous_response_not_found_event
-        ):
+        if status_request_state is not None and is_previous_response_not_found_event:
             status_request_state.error_http_status_override = 502
             status_request_state.previous_response_not_found_rewritten = (
                 response_id is None and not has_other_pending_requests
@@ -6592,7 +6667,20 @@ class ProxyService:
             _release_websocket_response_create_gate(created_request_state, session.response_create_gate)
 
         if response_id is not None and matched_request_state is not None:
-            await self._register_http_bridge_previous_response_id(session, response_id)
+            await self._register_http_bridge_previous_response_id(
+                session,
+                response_id,
+                input_item_count=(
+                    matched_request_state.input_item_count
+                    if event_type == "response.completed" and matched_request_state.input_item_count > 0
+                    else None
+                ),
+                input_full_fingerprint=(
+                    matched_request_state.input_full_fingerprint
+                    if event_type == "response.completed" and matched_request_state.input_item_count > 0
+                    else None
+                ),
+            )
 
         if matched_request_state is not None and matched_request_state.event_queue is not None:
             await matched_request_state.event_queue.put(event_block)
@@ -7166,6 +7254,7 @@ class ProxyService:
                     or is_missing_tool_output_event,
                     previous_response_id_hint=previous_response_id_hint,
                     error_message=error_message,
+                    allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                 )
                 release_create_gate = False
             else:
@@ -7184,6 +7273,8 @@ class ProxyService:
                     request_state.suppressed_duplicate_tool_call = True
                     upstream_control.suppress_downstream_event = True
                     return text
+                if event_type in _TEXT_DELTA_EVENT_TYPES:
+                    request_state.downstream_visible = True
                 if payload is not None:
                     text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
             if (
@@ -7198,6 +7289,7 @@ class ProxyService:
                     or is_missing_tool_output_event,
                     previous_response_id_hint=previous_response_id_hint,
                     error_message=error_message,
+                    allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                     allow_precreated_terminal_fallback=event_type
                     in {
                         "response.failed",
@@ -7212,6 +7304,7 @@ class ProxyService:
                             pending_requests,
                             previous_response_id_hint=previous_response_id_hint,
                             error_message=error_message,
+                            allow_unanchored_previous_response_error=is_previous_response_not_found_event,
                         ),
                     )
                     if not grouped_previous_response_request_states and is_missing_tool_output_event:
@@ -9675,6 +9768,7 @@ class _WebSocketRequestState:
     seen_tool_call_keys: dict[tuple[str, str, str | None, str | None, str], None] = field(default_factory=dict)
     input_item_count: int = 0
     input_full_fingerprint: str | None = None
+    downstream_visible: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -10318,6 +10412,23 @@ def _is_missing_tool_output_error(
     return normalized.startswith("no tool output found for function call call_")
 
 
+async def _websocket_full_resend_conflicts_with_visible_pending(
+    request_state: _WebSocketRequestState,
+    pending_requests: deque[_WebSocketRequestState],
+    *,
+    pending_lock: anyio.Lock,
+    codex_session_affinity: bool,
+) -> bool:
+    if (
+        not codex_session_affinity
+        or request_state.previous_response_id is not None
+        or request_state.input_item_count < _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS
+    ):
+        return False
+    async with pending_lock:
+        return any(pending is not request_state and pending.downstream_visible for pending in pending_requests)
+
+
 def _is_previous_response_not_found_error(
     *,
     code: str | None,
@@ -10329,6 +10440,39 @@ def _is_previous_response_not_found_error(
     if code != "invalid_request_error" or param != "previous_response_id":
         return False
     return _is_previous_response_not_found_message(message)
+
+
+def _compact_previous_response_not_found_error(exc: ProxyResponseError) -> ProxyResponseError | None:
+    error = _parse_openai_error(exc.payload)
+    if error is None:
+        return None
+    code = _normalize_error_code(error.code, error.type)
+    if not _is_previous_response_not_found_error(
+        code=code,
+        param=error.param,
+        message=error.message,
+    ):
+        return None
+    return ProxyResponseError(
+        502,
+        openai_error(
+            "stream_incomplete",
+            "Upstream websocket closed before response.completed",
+            error_type="server_error",
+        ),
+        failure_phase=exc.failure_phase,
+        retryable_same_contract=False,
+        failure_detail="previous_response_not_found",
+        failure_exception_type=exc.failure_exception_type,
+        upstream_status_code=exc.upstream_status_code or exc.status_code,
+    )
+
+
+def _proxy_response_error_code(exc: ProxyResponseError) -> str | None:
+    error = _parse_openai_error(exc.payload)
+    if error is None:
+        return None
+    return _normalize_error_code(error.code, error.type)
 
 
 def _refresh_websocket_request_input_fingerprint_from_text(request_state: _WebSocketRequestState) -> None:
@@ -10380,9 +10524,6 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
     upstream_control: _WebSocketUpstreamControl,
     original_text: str,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
-    if request_state.previous_response_id is None:
-        return event, payload, event_type, original_text
-
     error_code = _websocket_event_error_code(event_type, payload)
     error_param = _websocket_event_error_param(event_type, payload)
     error_message = _websocket_event_error_message(event_type, payload)
@@ -10393,6 +10534,8 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
     )
     reason = "previous_response_not_found"
     if not should_rewrite:
+        if request_state.previous_response_id is None:
+            return event, payload, event_type, original_text
         should_rewrite = _is_missing_tool_output_error(
             code=error_code,
             param=error_param,
@@ -10648,12 +10791,14 @@ def _match_websocket_request_state_for_anonymous_event(
     prefer_previous_response_not_found: bool,
     previous_response_id_hint: str | None = None,
     error_message: str | None = None,
+    allow_unanchored_previous_response_error: bool = False,
 ) -> _WebSocketRequestState | None:
     if prefer_previous_response_not_found:
         return _match_websocket_request_state_for_previous_response_error(
             pending_requests,
             previous_response_id_hint=previous_response_id_hint,
             error_message=error_message,
+            allow_unanchored_previous_response_error=allow_unanchored_previous_response_error,
         )
 
     if len(pending_requests) == 1:
@@ -10683,11 +10828,13 @@ def _match_websocket_request_state_for_previous_response_error(
     *,
     previous_response_id_hint: str | None = None,
     error_message: str | None = None,
+    allow_unanchored_previous_response_error: bool = False,
 ) -> _WebSocketRequestState | None:
     matching_requests = _matching_websocket_request_states_for_previous_response_error(
         pending_requests,
         previous_response_id_hint=previous_response_id_hint,
         error_message=error_message,
+        allow_unanchored_previous_response_error=allow_unanchored_previous_response_error,
     )
     if len(matching_requests) == 1:
         return matching_requests[0]
@@ -10699,11 +10846,14 @@ def _matching_websocket_request_states_for_previous_response_error(
     *,
     previous_response_id_hint: str | None = None,
     error_message: str | None = None,
+    allow_unanchored_previous_response_error: bool = False,
 ) -> list[_WebSocketRequestState]:
     followup_requests = [
         request_state for request_state in pending_requests if request_state.previous_response_id is not None
     ]
     if not followup_requests:
+        if allow_unanchored_previous_response_error and len(pending_requests) == 1:
+            return [pending_requests[0]]
         return []
     if previous_response_id_hint is not None:
         matching_requests = [
@@ -11222,6 +11372,7 @@ def _pop_terminal_websocket_request_state(
     prefer_previous_response_not_found: bool = False,
     previous_response_id_hint: str | None = None,
     error_message: str | None = None,
+    allow_unanchored_previous_response_error: bool = False,
     allow_precreated_terminal_fallback: bool = False,
 ) -> _WebSocketRequestState | None:
     if response_id is not None:
@@ -11242,6 +11393,7 @@ def _pop_terminal_websocket_request_state(
             pending_requests,
             previous_response_id_hint=previous_response_id_hint,
             error_message=error_message,
+            allow_unanchored_previous_response_error=allow_unanchored_previous_response_error,
         )
         if request_state is not None and request_state in pending_requests:
             pending_requests.remove(request_state)
@@ -11252,6 +11404,7 @@ def _pop_terminal_websocket_request_state(
             prefer_previous_response_not_found=prefer_previous_response_not_found,
             previous_response_id_hint=previous_response_id_hint,
             error_message=error_message,
+            allow_unanchored_previous_response_error=allow_unanchored_previous_response_error,
         )
         if request_state is not None and request_state in pending_requests:
             pending_requests.remove(request_state)
@@ -11658,6 +11811,21 @@ def _http_bridge_payload_looks_like_full_resend(payload: ResponsesRequest) -> bo
             except TypeError:
                 return False
     return False
+
+
+def _input_prefix_matches_stored_context(
+    input_value: JsonValue,
+    *,
+    stored_count: int,
+    stored_fingerprint: str | None,
+) -> bool:
+    if stored_count <= 0 or stored_fingerprint is None:
+        return False
+    if not isinstance(input_value, list):
+        return False
+    if len(input_value) <= stored_count:
+        return False
+    return _fingerprint_input_items(cast(list[JsonValue], input_value)[:stored_count]) == stored_fingerprint
 
 
 def _truncate_identifier(value: str, *, max_length: int = 96) -> str:
