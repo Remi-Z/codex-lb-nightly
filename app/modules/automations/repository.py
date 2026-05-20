@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha1
 from uuid import uuid4
 
 from sqlalchemy import and_, case, delete, exists, func, insert, literal, or_, select, update
@@ -209,6 +210,21 @@ class AutomationsRepository:
         jobs = list(result.scalars().all())
         return [self._job_from_model(job) for job in jobs]
 
+    async def list_due_scheduled_run_cycle_job_ids(
+        self,
+        *,
+        now_utc: datetime,
+    ) -> list[str]:
+        pending_due_account = self._pending_due_scheduled_cycle_account_exists(now_utc=now_utc)
+        result = await self._session.execute(
+            select(AutomationRunCycle.job_id)
+            .where(AutomationRunCycle.trigger == "scheduled")
+            .where(exists(pending_due_account))
+            .distinct()
+            .order_by(AutomationRunCycle.job_id.asc())
+        )
+        return [job_id for (job_id,) in result.all() if job_id]
+
     async def get_job(self, job_id: str) -> AutomationJobRecord | None:
         result = await self._session.execute(
             select(AutomationJob).where(AutomationJob.id == job_id).options(selectinload(AutomationJob.account_links))
@@ -318,14 +334,20 @@ class AutomationsRepository:
         if prompt is not None:
             job.prompt = prompt
         if account_ids is not None:
-            await self._session.execute(delete(AutomationJobAccount).where(AutomationJobAccount.job_id == job.id))
-            await self._session.flush()
-            self._session.add_all(
-                [
-                    AutomationJobAccount(job_id=job.id, account_id=account_id, position=index)
-                    for index, account_id in enumerate(account_ids)
-                ]
-            )
+            current_account_ids = [
+                link.account_id for link in sorted(job.account_links, key=lambda link: link.position)
+            ]
+            next_account_ids = list(account_ids)
+            if current_account_ids != next_account_ids:
+                job.updated_at = utcnow()
+                await self._session.execute(delete(AutomationJobAccount).where(AutomationJobAccount.job_id == job.id))
+                await self._session.flush()
+                self._session.add_all(
+                    [
+                        AutomationJobAccount(job_id=job.id, account_id=account_id, position=index)
+                        for index, account_id in enumerate(next_account_ids)
+                    ]
+                )
 
         await self._session.commit()
         await self._session.refresh(job)
@@ -460,6 +482,116 @@ class AutomationsRepository:
             return None
         return self._run_cycle_from_model(cycle)
 
+    async def list_due_scheduled_run_cycles(
+        self,
+        *,
+        job_id: str,
+        now_utc: datetime,
+        limit: int = 500,
+    ) -> list[AutomationRunCycleRecord]:
+        batch_size = max(limit, 500)
+        offset = 0
+        due_cycles: list[AutomationRunCycleRecord] = []
+        while len(due_cycles) < limit:
+            candidates = await self._list_due_scheduled_run_cycle_candidates(
+                job_id=job_id,
+                now_utc=now_utc,
+                limit=batch_size,
+                offset=offset,
+            )
+            if not candidates:
+                break
+            due_cycles.extend(await self._filter_due_scheduled_run_cycles(candidates, now_utc=now_utc))
+            if len(candidates) < batch_size:
+                break
+            offset += batch_size
+        return due_cycles[:limit]
+
+    async def _list_due_scheduled_run_cycle_candidates(
+        self,
+        *,
+        job_id: str,
+        now_utc: datetime,
+        limit: int,
+        offset: int,
+    ) -> list[AutomationRunCycleRecord]:
+        pending_due_account = self._pending_due_scheduled_cycle_account_exists(now_utc=now_utc)
+        result = await self._session.execute(
+            select(AutomationRunCycle)
+            .where(AutomationRunCycle.job_id == job_id)
+            .where(AutomationRunCycle.trigger == "scheduled")
+            .where(exists(pending_due_account))
+            .options(selectinload(AutomationRunCycle.cycle_accounts))
+            .execution_options(populate_existing=True)
+            .order_by(AutomationRunCycle.created_at.asc(), AutomationRunCycle.cycle_key.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [self._run_cycle_from_model(cycle) for cycle in result.scalars().all()]
+
+    async def _filter_due_scheduled_run_cycles(
+        self,
+        candidates: list[AutomationRunCycleRecord],
+        *,
+        now_utc: datetime,
+    ) -> list[AutomationRunCycleRecord]:
+        if not candidates:
+            return []
+        cycle_keys = [cycle.cycle_key for cycle in candidates]
+        result = await self._session.execute(
+            select(AutomationRun.cycle_key, AutomationRun.account_id, AutomationRun.slot_key).where(
+                AutomationRun.cycle_key.in_(cycle_keys)
+            )
+        )
+        completed_account_ids_by_cycle_key: dict[str, set[str]] = {}
+        slot_keys_by_cycle_key: dict[str, set[str]] = {}
+        for cycle_key, account_id, slot_key in result.all():
+            if account_id is not None:
+                completed_account_ids_by_cycle_key.setdefault(cycle_key, set()).add(account_id)
+            slot_keys_by_cycle_key.setdefault(cycle_key, set()).add(slot_key)
+
+        due_cycles: list[AutomationRunCycleRecord] = []
+        for cycle in candidates:
+            due_slot = _parse_scheduled_cycle_due_slot(cycle.cycle_key, job_id=cycle.job_id)
+            if due_slot is None:
+                due_cycles.append(cycle)
+                continue
+            completed_account_ids = completed_account_ids_by_cycle_key.get(cycle.cycle_key, set())
+            slot_keys = slot_keys_by_cycle_key.get(cycle.cycle_key, set())
+            has_due_account = False
+            for cycle_account in cycle.accounts:
+                if cycle_account.scheduled_for > now_utc:
+                    continue
+                if cycle_account.account_id in completed_account_ids:
+                    continue
+                slot_key = _scheduled_slot_key(
+                    cycle.job_id,
+                    account_id=cycle_account.account_id,
+                    due_slot=due_slot,
+                )
+                if slot_key in slot_keys:
+                    continue
+                has_due_account = True
+                break
+            if has_due_account:
+                due_cycles.append(cycle)
+        return due_cycles
+
+    @staticmethod
+    def _pending_due_scheduled_cycle_account_exists(*, now_utc: datetime):
+        return (
+            select(AutomationRunCycleAccount.account_id)
+            .where(AutomationRunCycleAccount.cycle_key == AutomationRunCycle.cycle_key)
+            .where(AutomationRunCycleAccount.scheduled_for <= now_utc)
+            .where(
+                ~exists(
+                    select(AutomationRun.id)
+                    .where(AutomationRun.cycle_key == AutomationRunCycleAccount.cycle_key)
+                    .where(AutomationRun.account_id == AutomationRunCycleAccount.account_id)
+                )
+            )
+        )
+
     async def create_run_cycle(
         self,
         *,
@@ -590,7 +722,6 @@ class AutomationsRepository:
             .where(AutomationRun.trigger == "manual")
             .where(AutomationRun.status == "running")
             .where(AutomationRun.finished_at.is_(None))
-            .where(AutomationRun.account_id.is_not(None))
             .where(AutomationRun.scheduled_for <= now_utc)
             .where(
                 or_(
@@ -652,7 +783,7 @@ class AutomationsRepository:
             .where(AutomationRun.trigger == "manual")
             .where(AutomationRun.status == "running")
             .where(AutomationRun.finished_at.is_(None))
-            .where(AutomationRun.account_id == account_id)
+            .where(or_(AutomationRun.account_id == account_id, AutomationRun.account_id.is_(None)))
             .where(AutomationRun.started_at == observed_started_at)
             .where(AutomationRun.attempt_count == 0)
             .where(AutomationRun.started_at <= AutomationRun.scheduled_for)
@@ -1512,3 +1643,19 @@ def _serialize_schedule_days(days: Sequence[str]) -> str:
     if not normalized:
         return ",".join(DEFAULT_AUTOMATION_SCHEDULE_DAYS)
     return ",".join(normalized)
+
+
+def _scheduled_slot_key(job_id: str, *, account_id: str, due_slot: datetime) -> str:
+    seed = f"{job_id}:{due_slot.isoformat()}:{account_id}"
+    digest = sha1(seed.encode("utf-8")).hexdigest()[:20]
+    return f"scheduled:{job_id}:{digest}"
+
+
+def _parse_scheduled_cycle_due_slot(cycle_key: str, *, job_id: str) -> datetime | None:
+    parts = cycle_key.split(":", maxsplit=2)
+    if len(parts) != 3 or parts[0] != "scheduled" or parts[1] != job_id:
+        return None
+    try:
+        return datetime.fromisoformat(parts[2].removesuffix("Z"))
+    except ValueError:
+        return None

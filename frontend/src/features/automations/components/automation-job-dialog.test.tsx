@@ -147,6 +147,85 @@ describe("AutomationJobDialog", () => {
     });
   });
 
+  it("preserves stored reasoning effort when selected model metadata is unavailable", async () => {
+    server.use(
+      http.get("/api/accounts", () =>
+        HttpResponse.json({
+          accounts: [
+            createAccountSummary({
+              accountId: "acc_primary",
+              email: "primary@example.com",
+              displayName: "Primary account",
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const editingJob: AutomationJob = {
+      id: "job_reasoning_metadata_unavailable",
+      name: "Metadata unavailable job",
+      enabled: true,
+      includePausedAccounts: false,
+      schedule: {
+        type: "daily",
+        time: "05:00",
+        timezone: "UTC",
+        thresholdMinutes: 0,
+        days: ["mon", "wed", "fri"],
+      },
+      model: "gpt-5.4",
+      reasoningEffort: "minimal",
+      prompt: "ping",
+      accountIds: ["acc_primary"],
+      nextRunAt: "2026-04-23T05:00:00Z",
+      lastRun: null,
+    };
+
+    renderWithProviders(
+      <AutomationJobDialog
+        open
+        busy={false}
+        editingJob={editingJob}
+        models={[
+          {
+            id: "gpt-5.3",
+            name: "GPT 5.3",
+            supportedReasoningEfforts: ["low", "medium", "high"],
+            defaultReasoningEffort: "medium",
+          },
+        ]}
+        modelsLoading={false}
+        onOpenChange={vi.fn()}
+        onCreate={vi.fn().mockResolvedValue(undefined)}
+        onUpdate={onUpdate}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    });
+
+    const nameInput = screen.getByLabelText("Name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Metadata unavailable job renamed");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    const [, payload] = onUpdate.mock.calls[0];
+    expect(payload).toMatchObject({
+      name: "Metadata unavailable job renamed",
+      model: "gpt-5.4",
+      prompt: "ping",
+    });
+    expect(payload).not.toHaveProperty("reasoningEffort");
+  });
+
   it("refreshes edit form defaults when the same automation receives updated data", async () => {
     server.use(
       http.get("/api/accounts", () =>

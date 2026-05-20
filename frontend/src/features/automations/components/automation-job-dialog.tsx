@@ -291,6 +291,7 @@ function AutomationJobDialogForm({
     selectedReasoningEffort !== (editingJob.reasoningEffort ?? null);
   const shouldClearStoredUnsupportedReasoningEffortOnUpdate =
     editingJob !== null &&
+    selectedModelMetadata !== null &&
     selectedModel === editingJob.model &&
     selectedReasoningEffort === null &&
     editingJob.reasoningEffort != null &&

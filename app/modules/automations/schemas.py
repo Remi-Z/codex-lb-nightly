@@ -16,34 +16,16 @@ AUTOMATION_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 AutomationWeekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
-def _default_automation_weekdays() -> list[AutomationWeekday]:
+def _default_automation_weekdays() -> list[str]:
     return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 class AutomationScheduleRequest(DashboardModel):
-    type: Literal["daily"] = "daily"
-    time: str = Field(pattern=r"^\d{2}:\d{2}$")
-    timezone: str = Field(min_length=1, max_length=64)
-    threshold_minutes: int = Field(default=0, ge=0, le=240)
-    days: list[AutomationWeekday] = Field(
-        default_factory=_default_automation_weekdays,
-        min_length=1,
-        max_length=7,
-    )
-
-    @field_validator("days")
-    @classmethod
-    def _validate_days(cls, value: list[AutomationWeekday]) -> list[AutomationWeekday]:
-        deduped: list[AutomationWeekday] = []
-        seen: set[str] = set()
-        for day in value:
-            if day in seen:
-                continue
-            seen.add(day)
-            deduped.append(day)
-        if not deduped:
-            raise ValueError("At least one schedule day is required")
-        return deduped
+    type: str = "daily"
+    time: str
+    timezone: str
+    threshold_minutes: int = 0
+    days: list[str] = Field(default_factory=_default_automation_weekdays)
 
 
 class AutomationScheduleResponse(DashboardModel):

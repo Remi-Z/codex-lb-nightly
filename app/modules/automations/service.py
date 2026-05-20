@@ -338,34 +338,6 @@ def compute_latest_due_slot_utc(
     raise RuntimeError("Failed to resolve latest due slot for automation schedule")
 
 
-def compute_due_slot_for_current_local_day_utc(
-    now_utc: datetime,
-    *,
-    schedule_time: str,
-    timezone_name: str,
-    schedule_days: list[str],
-) -> datetime | None:
-    normalized_now = _normalize_now_utc(now_utc)
-    hour, minute = parse_schedule_time_hhmm(schedule_time)
-    timezone = ZoneInfo(resolve_schedule_timezone_name(timezone_name))
-    allowed_days = set(normalize_schedule_days(schedule_days))
-
-    local_now = normalized_now.replace(tzinfo=UTC).astimezone(timezone)
-    local_due = datetime(
-        local_now.year,
-        local_now.month,
-        local_now.day,
-        hour,
-        minute,
-        tzinfo=timezone,
-    )
-    if _local_weekday_code(local_due) not in allowed_days:
-        return None
-    if local_due > local_now:
-        return None
-    return local_due.astimezone(UTC).replace(tzinfo=None)
-
-
 def compute_next_run_utc(
     now_utc: datetime,
     *,
@@ -768,77 +740,111 @@ class AutomationsService:
     async def run_due_jobs(self, *, now_utc: datetime | None = None) -> int:
         now = now_utc or utcnow()
         executed = await self._run_due_manual_runs(now_utc=now)
-        jobs = await self._repository.list_enabled_jobs()
+        jobs_by_id = {job.id: job for job in await self._repository.list_enabled_jobs()}
+        due_cycle_job_ids = await self._repository.list_due_scheduled_run_cycle_job_ids(now_utc=now)
+        missing_due_cycle_job_ids = [job_id for job_id in due_cycle_job_ids if job_id not in jobs_by_id]
+        if missing_due_cycle_job_ids:
+            jobs_by_id.update(await self._repository.get_jobs_by_ids(missing_due_cycle_job_ids))
+        jobs = list(jobs_by_id.values())
         for job in jobs:
-            due_slot = compute_due_slot_for_current_local_day_utc(
-                now,
-                schedule_time=job.schedule_time,
-                timezone_name=job.schedule_timezone,
-                schedule_days=job.schedule_days,
-            )
-            if due_slot is None:
-                continue
-            cycle_key = _scheduled_cycle_key(job.id, due_slot)
-            cycle = await self._repository.get_run_cycle(cycle_key=cycle_key)
-            if cycle is None and due_slot < _normalize_now_utc(job.updated_at):
-                continue
-            if cycle is None:
-                cycle = await self._get_or_create_scheduled_cycle(job=job, due_slot=due_slot)
-            existing_cycle_runs = await self._repository.list_runs_for_cycle_key(cycle_key=cycle_key)
-            cycle_account_id_by_slot_key = {
-                _scheduled_slot_key(
-                    job.id,
-                    account_id=cycle_account.account_id,
-                    due_slot=due_slot,
-                ): cycle_account.account_id
-                for cycle_account in cycle.accounts
-            }
-            existing_cycle_account_ids: set[str] = set()
-            for cycle_run in existing_cycle_runs:
-                account_id = cycle_run.account_id or cycle_account_id_by_slot_key.get(cycle_run.slot_key)
-                if account_id is not None:
-                    existing_cycle_account_ids.add(account_id)
-            eligible_cycle_account_ids = await self._resolve_eligible_account_ids(
-                [cycle_account.account_id for cycle_account in cycle.accounts],
-                include_paused_accounts=job.include_paused_accounts,
-            )
-            cycle_expected_accounts = cycle.cycle_expected_accounts
-            for cycle_account in cycle.accounts:
-                if cycle_account.account_id in existing_cycle_account_ids:
+            cycles_to_process: dict[str, tuple[AutomationRunCycleRecord, datetime]] = {}
+            due_cycles = await self._repository.list_due_scheduled_run_cycles(job_id=job.id, now_utc=now)
+            for due_cycle in due_cycles:
+                cycle_due_slot = _parse_scheduled_cycle_due_slot(due_cycle.cycle_key, job_id=job.id)
+                if cycle_due_slot is None:
                     continue
-                if cycle_account.scheduled_for > now:
-                    continue
-                if cycle_account.account_id not in eligible_cycle_account_ids:
-                    await self._repository.delete_run_cycle_account(
-                        cycle_key=cycle_key,
-                        account_id=cycle_account.account_id,
-                    )
-                    cycle_expected_accounts = max(0, cycle_expected_accounts - 1)
-                    continue
-                slot_key = _scheduled_slot_key(
-                    job.id,
-                    account_id=cycle_account.account_id,
-                    due_slot=due_slot,
+                cycles_to_process[due_cycle.cycle_key] = (due_cycle, cycle_due_slot)
+            if job.enabled:
+                due_slot = compute_latest_due_slot_utc(
+                    now,
+                    schedule_time=job.schedule_time,
+                    timezone_name=job.schedule_timezone,
+                    schedule_days=job.schedule_days,
                 )
-                claim_result = await self._repository.claim_scheduled_cycle_account_run(
-                    job_id=job.id,
-                    trigger=AUTOMATION_RUN_TRIGGER_SCHEDULED,
-                    slot_key=slot_key,
+                cycle_key = _scheduled_cycle_key(job.id, due_slot)
+                if cycle_key not in cycles_to_process:
+                    cycle = await self._repository.get_run_cycle(cycle_key=cycle_key)
+                    if cycle is None and due_slot < _normalize_now_utc(job.updated_at):
+                        pass
+                    else:
+                        if cycle is None:
+                            cycle = await self._get_or_create_scheduled_cycle(job=job, due_slot=due_slot)
+                        cycles_to_process[cycle.cycle_key] = (cycle, due_slot)
+            for cycle, cycle_due_slot in cycles_to_process.values():
+                executed += await self._run_due_scheduled_cycle(
+                    job=job,
+                    cycle=cycle,
+                    due_slot=cycle_due_slot,
+                    now_utc=now,
+                )
+        return executed
+
+    async def _run_due_scheduled_cycle(
+        self,
+        *,
+        job: AutomationJobRecord,
+        cycle: AutomationRunCycleRecord,
+        due_slot: datetime,
+        now_utc: datetime,
+    ) -> int:
+        cycle_key = cycle.cycle_key
+        existing_cycle_runs = await self._repository.list_runs_for_cycle_key(cycle_key=cycle_key)
+        cycle_account_id_by_slot_key = {
+            _scheduled_slot_key(
+                job.id,
+                account_id=cycle_account.account_id,
+                due_slot=due_slot,
+            ): cycle_account.account_id
+            for cycle_account in cycle.accounts
+        }
+        existing_cycle_account_ids: set[str] = set()
+        for cycle_run in existing_cycle_runs:
+            account_id = cycle_run.account_id or cycle_account_id_by_slot_key.get(cycle_run.slot_key)
+            if account_id is not None:
+                existing_cycle_account_ids.add(account_id)
+        eligible_cycle_account_ids = await self._resolve_eligible_account_ids(
+            [cycle_account.account_id for cycle_account in cycle.accounts],
+            include_paused_accounts=job.include_paused_accounts,
+            now_utc=now_utc,
+        )
+        executed = 0
+        cycle_expected_accounts = cycle.cycle_expected_accounts
+        for cycle_account in cycle.accounts:
+            if cycle_account.account_id in existing_cycle_account_ids:
+                continue
+            if cycle_account.scheduled_for > now_utc:
+                continue
+            if cycle_account.account_id not in eligible_cycle_account_ids:
+                await self._repository.delete_run_cycle_account(
                     cycle_key=cycle_key,
-                    cycle_expected_accounts=cycle_expected_accounts,
-                    cycle_window_end=cycle.cycle_window_end,
-                    scheduled_for=cycle_account.scheduled_for,
-                    started_at=now,
                     account_id=cycle_account.account_id,
                 )
-                claim = claim_result.run
-                if claim is None:
-                    if not claim_result.snapshot_account_exists:
-                        cycle_expected_accounts = max(0, cycle_expected_accounts - 1)
-                    continue
-                existing_cycle_account_ids.add(cycle_account.account_id)
-                await self._execute_claimed_run(job, claim, forced_account_id=cycle_account.account_id)
-                executed += 1
+                cycle_expected_accounts = max(0, cycle_expected_accounts - 1)
+                continue
+            slot_key = _scheduled_slot_key(
+                job.id,
+                account_id=cycle_account.account_id,
+                due_slot=due_slot,
+            )
+            claim_result = await self._repository.claim_scheduled_cycle_account_run(
+                job_id=job.id,
+                trigger=AUTOMATION_RUN_TRIGGER_SCHEDULED,
+                slot_key=slot_key,
+                cycle_key=cycle_key,
+                cycle_expected_accounts=cycle_expected_accounts,
+                cycle_window_end=cycle.cycle_window_end,
+                scheduled_for=cycle_account.scheduled_for,
+                started_at=now_utc,
+                account_id=cycle_account.account_id,
+            )
+            claim = claim_result.run
+            if claim is None:
+                if not claim_result.snapshot_account_exists:
+                    cycle_expected_accounts = max(0, cycle_expected_accounts - 1)
+                continue
+            existing_cycle_account_ids.add(cycle_account.account_id)
+            await self._execute_claimed_run(job, claim, forced_account_id=cycle_account.account_id)
+            executed += 1
         return executed
 
     async def _run_due_manual_runs(self, *, now_utc: datetime) -> int:
@@ -853,9 +859,14 @@ class AutomationsService:
         executed = 0
         for run in due_runs:
             job = jobs_by_id.get(run.job_id)
-            if job is None or run.account_id is None:
+            if job is None:
                 continue
-            account = await self._accounts_repository.get_by_id(run.account_id)
+            account_id = await self._resolve_manual_run_dispatch_account_id(run, job=job)
+            if account_id is None:
+                continue
+            account = await self._accounts_repository.get_by_id(account_id)
+            if account is not None:
+                await self._reactivate_accounts_if_reset_elapsed([account], now_utc=now_utc)
             if account is None or not self._is_account_eligible_for_automation(
                 account,
                 include_paused_accounts=job.include_paused_accounts,
@@ -864,7 +875,7 @@ class AutomationsService:
                     await self._repository.skip_unclaimed_manual_run_placeholder(
                         run.id,
                         cycle_key=run.cycle_key,
-                        account_id=run.account_id,
+                        account_id=account_id,
                         observed_started_at=run.started_at,
                         skipped_at=now_utc,
                     )
@@ -885,6 +896,29 @@ class AutomationsService:
             await self._execute_claimed_run(job, claimed_run, forced_account_id=claimed_run.account_id)
             executed += 1
         return executed
+
+    async def _resolve_manual_run_dispatch_account_id(
+        self,
+        run: AutomationRunRecord,
+        *,
+        job: AutomationJobRecord,
+    ) -> str | None:
+        if run.account_id is not None:
+            return run.account_id
+        if not _is_unclaimed_run_placeholder(run):
+            return None
+        cycle_key = _normalize_legacy_manual_cycle_key(run.cycle_key)
+        if cycle_key is None:
+            return None
+        cycle = await self._repository.get_run_cycle(cycle_key=cycle_key)
+        if cycle is None:
+            return None
+        return self._resolve_manual_cycle_run_account_id(
+            run,
+            job=job,
+            cycle_key=cycle.cycle_key,
+            expected_account_ids=[entry.account_id for entry in cycle.accounts],
+        )
 
     async def _get_or_create_scheduled_cycle(
         self,
@@ -1212,6 +1246,7 @@ class AutomationsService:
         eligible_pending_account_ids = await self._resolve_eligible_account_ids(
             expected_account_ids,
             include_paused_accounts=job.include_paused_accounts,
+            now_utc=now_utc,
         )
         all_account_ids = [
             *[
@@ -1379,6 +1414,7 @@ class AutomationsService:
         eligible_pending_account_ids = await self._resolve_eligible_account_ids(
             expected_account_ids,
             include_paused_accounts=job.include_paused_accounts,
+            now_utc=now_utc,
         )
         all_account_ids = [
             *[
@@ -1534,10 +1570,13 @@ class AutomationsService:
         account_ids: list[str],
         *,
         include_paused_accounts: bool,
+        now_utc: datetime | None = None,
     ) -> set[str]:
         if not account_ids:
             return set()
-        accounts_by_id = {account.id: account for account in await self._accounts_repository.list_accounts()}
+        accounts = await self._accounts_repository.list_accounts()
+        await self._reactivate_accounts_if_reset_elapsed(accounts, now_utc=now_utc or utcnow())
+        accounts_by_id = {account.id: account for account in accounts}
         return {
             account_id
             for account_id in account_ids
@@ -1594,6 +1633,9 @@ class AutomationsService:
         model_for_reasoning = model if model is not None else existing.model
         if payload.reasoning_effort_set:
             reasoning_effort = _normalize_reasoning_effort(payload.reasoning_effort, model_slug=model_for_reasoning)
+        elif model is not None and existing.reasoning_effort is not None:
+            _normalize_reasoning_effort(existing.reasoning_effort, model_slug=model_for_reasoning)
+            reasoning_effort = None
         else:
             reasoning_effort = None
         if payload.schedule_type is None:
@@ -1634,36 +1676,6 @@ class AutomationsService:
                     if payload.include_paused_accounts is not None
                     else existing.include_paused_accounts
                 ),
-            )
-
-        if (
-            name is None
-            and payload.enabled is None
-            and include_paused_accounts is None
-            and schedule_type is None
-            and schedule_time is None
-            and schedule_timezone is None
-            and schedule_days is None
-            and schedule_threshold_minutes is None
-            and model is None
-            and not payload.reasoning_effort_set
-            and prompt is None
-            and account_ids is None
-        ):
-            return AutomationJobUpdateInput(
-                name=existing.name,
-                enabled=existing.enabled,
-                include_paused_accounts=existing.include_paused_accounts,
-                schedule_type=existing.schedule_type,
-                schedule_time=existing.schedule_time,
-                schedule_timezone=existing.schedule_timezone,
-                schedule_days=existing.schedule_days,
-                schedule_threshold_minutes=existing.schedule_threshold_minutes,
-                model=existing.model,
-                reasoning_effort=existing.reasoning_effort,
-                reasoning_effort_set=True,
-                prompt=existing.prompt,
-                account_ids=existing.account_ids,
             )
 
         return AutomationJobUpdateInput(
@@ -2031,6 +2043,16 @@ def _scheduled_slot_key(
 
 def _scheduled_cycle_key(job_id: str, due_slot: datetime) -> str:
     return f"scheduled:{job_id}:{due_slot.isoformat()}"
+
+
+def _parse_scheduled_cycle_due_slot(cycle_key: str, *, job_id: str) -> datetime | None:
+    parts = cycle_key.split(":", maxsplit=2)
+    if len(parts) != 3 or parts[0] != "scheduled" or parts[1] != job_id:
+        return None
+    try:
+        return _normalize_now_utc(datetime.fromisoformat(parts[2].removesuffix("Z")))
+    except ValueError:
+        return None
 
 
 def _manual_cycle_key(job_id: str, cycle_id: str) -> str:
