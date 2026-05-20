@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import and_, case, delete, exists, func, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, literal, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -43,6 +43,12 @@ class AutomationRunRecord:
     error_code: str | None
     error_message: str | None
     attempt_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationScheduledRunClaimRecord:
+    run: AutomationRunRecord | None
+    snapshot_account_exists: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,11 +381,78 @@ class AutomationsRepository:
         await self._session.refresh(run)
         return self._run_from_model(run)
 
+    async def claim_scheduled_cycle_account_run(
+        self,
+        *,
+        job_id: str,
+        trigger: str,
+        slot_key: str,
+        cycle_key: str,
+        cycle_expected_accounts: int | None,
+        cycle_window_end: datetime | None,
+        scheduled_for: datetime,
+        started_at: datetime,
+        account_id: str,
+    ) -> AutomationScheduledRunClaimRecord:
+        run_id = f"run_{uuid4().hex}"
+        stmt = (
+            insert(AutomationRun)
+            .from_select(
+                [
+                    "id",
+                    "job_id",
+                    "trigger",
+                    "slot_key",
+                    "cycle_key",
+                    "cycle_expected_accounts",
+                    "cycle_window_end",
+                    "scheduled_for",
+                    "started_at",
+                    "status",
+                    "account_id",
+                    "attempt_count",
+                ],
+                select(
+                    literal(run_id),
+                    literal(job_id),
+                    literal(trigger),
+                    literal(slot_key),
+                    literal(cycle_key),
+                    literal(cycle_expected_accounts),
+                    literal(cycle_window_end),
+                    literal(scheduled_for),
+                    literal(started_at),
+                    literal("running"),
+                    literal(account_id),
+                    literal(0),
+                ).where(
+                    exists(
+                        select(AutomationRunCycleAccount.account_id)
+                        .where(AutomationRunCycleAccount.cycle_key == cycle_key)
+                        .where(AutomationRunCycleAccount.account_id == account_id)
+                    )
+                ),
+            )
+            .returning(AutomationRun)
+        )
+        try:
+            result = await self._session.execute(stmt)
+            run = result.scalar_one_or_none()
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            snapshot_account_exists = await self.run_cycle_account_exists(cycle_key=cycle_key, account_id=account_id)
+            return AutomationScheduledRunClaimRecord(run=None, snapshot_account_exists=snapshot_account_exists)
+        if run is None:
+            return AutomationScheduledRunClaimRecord(run=None, snapshot_account_exists=False)
+        return AutomationScheduledRunClaimRecord(run=self._run_from_model(run), snapshot_account_exists=True)
+
     async def get_run_cycle(self, *, cycle_key: str) -> AutomationRunCycleRecord | None:
         result = await self._session.execute(
             select(AutomationRunCycle)
             .where(AutomationRunCycle.cycle_key == cycle_key)
             .options(selectinload(AutomationRunCycle.cycle_accounts))
+            .execution_options(populate_existing=True)
             .limit(1)
         )
         cycle = result.scalar_one_or_none()
@@ -564,6 +637,97 @@ class AutomationsRepository:
             return None
         return self._run_from_model(run)
 
+    async def skip_unclaimed_manual_run_placeholder(
+        self,
+        run_id: str,
+        *,
+        cycle_key: str,
+        account_id: str,
+        observed_started_at: datetime,
+        skipped_at: datetime,
+    ) -> bool:
+        result = await self._session.execute(
+            update(AutomationRun)
+            .where(AutomationRun.id == run_id)
+            .where(AutomationRun.trigger == "manual")
+            .where(AutomationRun.status == "running")
+            .where(AutomationRun.finished_at.is_(None))
+            .where(AutomationRun.account_id == account_id)
+            .where(AutomationRun.started_at == observed_started_at)
+            .where(AutomationRun.attempt_count == 0)
+            .where(AutomationRun.started_at <= AutomationRun.scheduled_for)
+            .values(
+                status="partial",
+                finished_at=skipped_at,
+                account_id=None,
+                error_code=None,
+                error_message=None,
+            )
+            .returning(AutomationRun.id)
+        )
+        skipped_run_id = result.scalar_one_or_none()
+        if skipped_run_id is None:
+            await self._session.commit()
+            return False
+
+        await self._session.execute(
+            delete(AutomationRunCycleAccount)
+            .where(AutomationRunCycleAccount.cycle_key == cycle_key)
+            .where(AutomationRunCycleAccount.account_id == account_id)
+        )
+        await self._sync_run_cycle_expected_accounts(cycle_key=cycle_key)
+        await self._session.commit()
+        self._session.expire_all()
+        return True
+
+    async def delete_run_cycle_account(self, *, cycle_key: str, account_id: str) -> bool:
+        result = await self._session.execute(
+            delete(AutomationRunCycleAccount)
+            .where(AutomationRunCycleAccount.cycle_key == cycle_key)
+            .where(AutomationRunCycleAccount.account_id == account_id)
+            .returning(AutomationRunCycleAccount.account_id)
+        )
+        deleted_account_id = result.scalar_one_or_none()
+        if deleted_account_id is not None:
+            await self._sync_run_cycle_expected_accounts(cycle_key=cycle_key)
+        await self._session.commit()
+        self._session.expire_all()
+        return deleted_account_id is not None
+
+    async def run_cycle_account_exists(self, *, cycle_key: str, account_id: str) -> bool:
+        result = await self._session.execute(
+            select(
+                exists(
+                    select(AutomationRunCycleAccount.account_id)
+                    .where(AutomationRunCycleAccount.cycle_key == cycle_key)
+                    .where(AutomationRunCycleAccount.account_id == account_id)
+                )
+            )
+        )
+        return bool(result.scalar_one())
+
+    async def _sync_run_cycle_expected_accounts(self, *, cycle_key: str) -> None:
+        remaining_count = int(
+            (
+                await self._session.execute(
+                    select(func.count(AutomationRunCycleAccount.account_id)).where(
+                        AutomationRunCycleAccount.cycle_key == cycle_key
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        await self._session.execute(
+            update(AutomationRun)
+            .where(AutomationRun.cycle_key == cycle_key)
+            .values(cycle_expected_accounts=remaining_count)
+        )
+        await self._session.execute(
+            update(AutomationRunCycle)
+            .where(AutomationRunCycle.cycle_key == cycle_key)
+            .values(cycle_expected_accounts=remaining_count)
+        )
+
     async def list_runs_page(
         self,
         *,
@@ -671,6 +835,7 @@ class AutomationsRepository:
             AutomationRun.scheduled_for.label("scheduled_for"),
             AutomationRun.cycle_window_end.label("cycle_window_end"),
             AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+            AutomationRun.attempt_count.label("attempt_count"),
         ).join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
         if conditions:
             filtered_runs_stmt = filtered_runs_stmt.where(and_(*conditions))
@@ -688,6 +853,7 @@ class AutomationsRepository:
                 AutomationRun.scheduled_for.label("scheduled_for"),
                 AutomationRun.cycle_window_end.label("cycle_window_end"),
                 AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+                AutomationRun.attempt_count.label("attempt_count"),
             )
             .join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
             .join(candidate_cycles, candidate_cycles.c.cycle_key == AutomationRun.cycle_key)
@@ -707,6 +873,27 @@ class AutomationsRepository:
         )
         ranked = ranked_stmt.subquery()
 
+        countable_outcome = or_(
+            cycle_runs.c.account_id.is_not(None),
+            cycle_runs.c.trigger == "scheduled",
+            cycle_runs.c.attempt_count > 0,
+        )
+        completed_non_null_account = case(
+            (cycle_runs.c.status != "running", cycle_runs.c.account_id),
+            else_=None,
+        )
+        completed_null_account = case(
+            (
+                and_(
+                    cycle_runs.c.status != "running",
+                    cycle_runs.c.account_id.is_(None),
+                    countable_outcome,
+                ),
+                1,
+            ),
+            else_=0,
+        )
+
         cycle_agg_stmt = select(
             cycle_runs.c.cycle_key.label("cycle_key"),
             func.max(case((cycle_runs.c.trigger == "manual", 1), else_=0)).label("has_manual_trigger"),
@@ -716,17 +903,18 @@ class AutomationsRepository:
             func.max(case((cycle_runs.c.trigger != "manual", cycle_runs.c.started_at), else_=None)).label(
                 "non_manual_cycle_started_at"
             ),
-            func.count(
-                func.distinct(
-                    case(
-                        (cycle_runs.c.status != "running", cycle_runs.c.account_id),
-                        else_=None,
-                    )
-                )
-            ).label("completed_accounts"),
-            func.sum(case((cycle_runs.c.status == "success", 1), else_=0)).label("success_count"),
-            func.sum(case((cycle_runs.c.status == "failed", 1), else_=0)).label("failed_count"),
-            func.sum(case((cycle_runs.c.status == "partial", 1), else_=0)).label("partial_count"),
+            (func.count(func.distinct(completed_non_null_account)) + func.sum(completed_null_account)).label(
+                "completed_accounts"
+            ),
+            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
+                "success_count"
+            ),
+            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
+                "failed_count"
+            ),
+            func.sum(case((and_(countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
+                "partial_count"
+            ),
             func.sum(case((cycle_runs.c.status == "running", 1), else_=0)).label("running_count"),
             func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("expected_accounts"),
             func.max(func.coalesce(cycle_runs.c.cycle_window_end, cycle_runs.c.scheduled_for)).label("window_end"),
@@ -859,6 +1047,8 @@ class AutomationsRepository:
                 AutomationRun.scheduled_for.label("scheduled_for"),
                 AutomationRun.cycle_window_end.label("cycle_window_end"),
                 AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+                AutomationRun.trigger.label("trigger"),
+                AutomationRun.attempt_count.label("attempt_count"),
             ).join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
             if conditions:
                 filtered_runs_stmt = filtered_runs_stmt.where(and_(*conditions))
@@ -874,6 +1064,8 @@ class AutomationsRepository:
                 AutomationRun.scheduled_for.label("scheduled_for"),
                 AutomationRun.cycle_window_end.label("cycle_window_end"),
                 AutomationRun.cycle_expected_accounts.label("cycle_expected_accounts"),
+                AutomationRun.trigger.label("trigger"),
+                AutomationRun.attempt_count.label("attempt_count"),
             ).join(candidate_cycles, candidate_cycles.c.cycle_key == AutomationRun.cycle_key)
             cycle_runs = cycle_runs_stmt.subquery()
 
@@ -890,19 +1082,41 @@ class AutomationsRepository:
             )
             ranked = ranked_stmt.subquery()
 
+            countable_outcome = or_(
+                cycle_runs.c.account_id.is_not(None),
+                cycle_runs.c.trigger == "scheduled",
+                cycle_runs.c.attempt_count > 0,
+            )
+            completed_non_null_account = case(
+                (cycle_runs.c.status != "running", cycle_runs.c.account_id),
+                else_=None,
+            )
+            completed_null_account = case(
+                (
+                    and_(
+                        cycle_runs.c.status != "running",
+                        cycle_runs.c.account_id.is_(None),
+                        countable_outcome,
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+
             cycle_agg_stmt = select(
                 cycle_runs.c.cycle_key.label("cycle_key"),
-                func.count(
-                    func.distinct(
-                        case(
-                            (cycle_runs.c.status != "running", cycle_runs.c.account_id),
-                            else_=None,
-                        )
-                    )
-                ).label("completed_accounts"),
-                func.sum(case((cycle_runs.c.status == "success", 1), else_=0)).label("success_count"),
-                func.sum(case((cycle_runs.c.status == "failed", 1), else_=0)).label("failed_count"),
-                func.sum(case((cycle_runs.c.status == "partial", 1), else_=0)).label("partial_count"),
+                (func.count(func.distinct(completed_non_null_account)) + func.sum(completed_null_account)).label(
+                    "completed_accounts"
+                ),
+                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "success"), 1), else_=0)).label(
+                    "success_count"
+                ),
+                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "failed"), 1), else_=0)).label(
+                    "failed_count"
+                ),
+                func.sum(case((and_(countable_outcome, cycle_runs.c.status == "partial"), 1), else_=0)).label(
+                    "partial_count"
+                ),
                 func.sum(case((cycle_runs.c.status == "running", 1), else_=0)).label("running_count"),
                 func.max(func.coalesce(cycle_runs.c.cycle_expected_accounts, 0)).label("expected_accounts"),
                 func.max(func.coalesce(cycle_runs.c.cycle_window_end, cycle_runs.c.scheduled_for)).label("window_end"),

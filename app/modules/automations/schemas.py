@@ -16,13 +16,17 @@ AUTOMATION_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 AutomationWeekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
+def _default_automation_weekdays() -> list[AutomationWeekday]:
+    return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
 class AutomationScheduleRequest(DashboardModel):
     type: Literal["daily"] = "daily"
     time: str = Field(pattern=r"^\d{2}:\d{2}$")
     timezone: str = Field(min_length=1, max_length=64)
     threshold_minutes: int = Field(default=0, ge=0, le=240)
     days: list[AutomationWeekday] = Field(
-        default_factory=lambda: list(AUTOMATION_WEEKDAY_CODES),
+        default_factory=_default_automation_weekdays,
         min_length=1,
         max_length=7,
     )

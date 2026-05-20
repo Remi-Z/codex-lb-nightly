@@ -93,6 +93,22 @@ The scheduler MUST execute each enabled daily job once per local calendar day at
 - **THEN** the scheduler continues dispatching the remaining accounts from that existing cycle
 - **AND** it does not create a second cycle for the same local-day slot
 
+#### Scenario: Ineligible snapshot accounts are skipped before dispatch
+
+- **GIVEN** a daily cycle snapshot contains an account whose scheduled dispatch time has arrived
+- **WHEN** that account is no longer eligible for automation dispatch because it is deleted, rate-limited, quota-exceeded, or deactivated
+- **THEN** the scheduler skips that account without creating a per-account failed run
+- **AND** the cycle can continue dispatching later eligible accounts from the same snapshot
+- **AND** later reactivation of that account does not dispatch it from that same cycle
+
+#### Scenario: Ineligible manual cycle placeholders are omitted before dispatch
+
+- **GIVEN** a manual run cycle pre-created a delayed per-account placeholder
+- **WHEN** that account becomes rate-limited, quota-exceeded, deactivated, or deleted before its dispatch time
+- **THEN** run details omit that placeholder from pending per-account rows
+- **AND** the scheduler skips that placeholder without marking it failed
+- **AND** later reactivation of that account does not dispatch that skipped placeholder
+
 ### Requirement: Scheduler is safe in multi-replica deployments
 
 The system MUST guarantee at-most-once execution for each due schedule slot `(job_id, scheduled_for)` across replicas.
@@ -152,6 +168,20 @@ The system MUST persist run history rows and expose them via dashboard APIs so o
 
 - **WHEN** the background scheduler executes a due job slot
 - **THEN** persisted run history marks `trigger: "scheduled"`
+
+#### Scenario: Deleted accounts do not rewrite completed cycle outcomes
+
+- **GIVEN** a cycle contains a completed per-account run
+- **WHEN** that account is deleted afterward
+- **THEN** run details still count the per-account run as completed
+- **AND** the account does not reappear as a pending dispatch
+
+#### Scenario: Ineligible accounts are omitted from pending cycle details
+
+- **GIVEN** a cycle snapshot contains an account that has not dispatched yet
+- **WHEN** that account is no longer eligible for automation dispatch because it is deleted, rate-limited, quota-exceeded, or deactivated
+- **THEN** run details omit that account from pending per-account rows
+- **AND** the cycle total and pending counts do not include that account
 
 ### Requirement: Automation pings do not mutate durable user continuity
 

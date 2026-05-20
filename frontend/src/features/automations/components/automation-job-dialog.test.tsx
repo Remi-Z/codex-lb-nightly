@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
+import type { ModelItem } from "@/features/api-keys/hooks/use-models";
 import type { AutomationJob } from "@/features/automations/schemas";
 import { createAccountSummary } from "@/test/mocks/factories";
 import { server } from "@/test/mocks/server";
@@ -144,6 +145,79 @@ describe("AutomationJobDialog", () => {
       prompt: "ping",
       reasoningEffort: null,
     });
+  });
+
+  it("refreshes edit form defaults when the same automation receives updated data", async () => {
+    server.use(
+      http.get("/api/accounts", () =>
+        HttpResponse.json({
+          accounts: [
+            createAccountSummary({
+              accountId: "acc_primary",
+              email: "primary@example.com",
+              displayName: "Primary account",
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const editingJob: AutomationJob = {
+      id: "job_refreshed",
+      name: "Original automation",
+      enabled: true,
+      includePausedAccounts: false,
+      schedule: {
+        type: "daily",
+        time: "05:00",
+        timezone: "UTC",
+        thresholdMinutes: 0,
+        days: ["mon", "wed", "fri"],
+      },
+      model: "gpt-5.4",
+      reasoningEffort: "medium",
+      prompt: "old prompt",
+      accountIds: ["acc_primary"],
+      nextRunAt: "2026-04-23T05:00:00Z",
+      lastRun: null,
+    };
+    const models: ModelItem[] = [
+      {
+        id: "gpt-5.4",
+        name: "GPT 5.4",
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        defaultReasoningEffort: "medium",
+      },
+    ];
+    const props = {
+      open: true,
+      busy: false,
+      models,
+      modelsLoading: false,
+      onOpenChange: vi.fn(),
+      onCreate: vi.fn().mockResolvedValue(undefined),
+      onUpdate: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const { rerender } = renderWithProviders(<AutomationJobDialog {...props} editingJob={editingJob} />);
+
+    expect(screen.getByLabelText("Name")).toHaveValue("Original automation");
+
+    rerender(
+      <AutomationJobDialog
+        {...props}
+        editingJob={{
+          ...editingJob,
+          name: "Updated automation",
+          prompt: "new prompt",
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Name")).toHaveValue("Updated automation");
+    });
+    expect(screen.getByLabelText("Prompt")).toHaveValue("new prompt");
   });
 
   it("submits a user-selected reasoning effort on create", async () => {

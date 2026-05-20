@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -26,7 +26,7 @@ import {
   parseScheduleTimeInput,
   scheduleTimePlaceholder,
 } from "@/features/automations/time-utils";
-import { useTimeFormatStore } from "@/hooks/use-time-format";
+import { useTimeFormatStore, type TimeFormatPreference } from "@/hooks/use-time-format";
 import { cn } from "@/lib/utils";
 import type {
   AutomationCreateRequest,
@@ -97,6 +97,10 @@ type AutomationJobDialogProps = {
   onUpdate: (automationId: string, payload: AutomationUpdateRequest) => Promise<void>;
 };
 
+type AutomationJobDialogFormProps = Omit<AutomationJobDialogProps, "open"> & {
+  timeFormat: TimeFormatPreference;
+};
+
 function localTimezone(): string {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return timezone || "UTC";
@@ -161,8 +165,52 @@ function parseThresholdInput(rawValue: string): { ok: true; value: number } | { 
   return { ok: true, value: parsed };
 }
 
+function getAutomationJobDialogFormKey(editingJob: AutomationJob | null, timeFormat: TimeFormatPreference): string {
+  if (editingJob === null) {
+    return JSON.stringify(["create", timeFormat]);
+  }
+  return JSON.stringify([
+    "edit",
+    timeFormat,
+    editingJob.id,
+    editingJob.name,
+    editingJob.enabled,
+    editingJob.includePausedAccounts,
+    editingJob.schedule.type,
+    editingJob.schedule.time,
+    editingJob.schedule.timezone,
+    editingJob.schedule.thresholdMinutes,
+    editingJob.schedule.days,
+    editingJob.model,
+    editingJob.reasoningEffort ?? null,
+    editingJob.prompt,
+    editingJob.accountIds,
+  ]);
+}
+
 export function AutomationJobDialog({
   open,
+  onOpenChange,
+  ...formProps
+}: AutomationJobDialogProps) {
+  const timeFormat = useTimeFormatStore((state) => state.timeFormat);
+  const formKey = getAutomationJobDialogFormKey(formProps.editingJob, timeFormat);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open ? (
+        <AutomationJobDialogForm
+          key={formKey}
+          {...formProps}
+          onOpenChange={onOpenChange}
+          timeFormat={timeFormat}
+        />
+      ) : null}
+    </Dialog>
+  );
+}
+
+function AutomationJobDialogForm({
   busy,
   editingJob,
   models,
@@ -170,41 +218,42 @@ export function AutomationJobDialog({
   onOpenChange,
   onCreate,
   onUpdate,
-}: AutomationJobDialogProps) {
+  timeFormat,
+}: AutomationJobDialogFormProps) {
   const isEditing = editingJob !== null;
-  const timeFormat = useTimeFormatStore((state) => state.timeFormat);
   const { accountsQuery } = useAccounts();
+  const initialName = editingJob?.name ?? "";
+  const initialScheduleTime = editingJob?.schedule.time ?? DEFAULT_SCHEDULE_TIME;
+  const initialScheduleThreshold = editingJob?.schedule.thresholdMinutes ?? DEFAULT_SCHEDULE_THRESHOLD_MINUTES;
 
-  const [nameDefaultValue, setNameDefaultValue] = useState("");
-  const [nameValidationValue, setNameValidationValue] = useState("");
-  const [nameHasValue, setNameHasValue] = useState(false);
-  const [nameInputVersion, setNameInputVersion] = useState(0);
-  const [automationType, setAutomationType] = useState<AutomationScheduleType>("daily");
-  const [scheduleTimeValue, setScheduleTimeValue] = useState(DEFAULT_SCHEDULE_TIME);
-  const [scheduleTimeDefaultValue, setScheduleTimeDefaultValue] = useState(
-    formatScheduleTimeForInput(DEFAULT_SCHEDULE_TIME, timeFormat),
-  );
-  const [scheduleTimeInputVersion, setScheduleTimeInputVersion] = useState(0);
+  const [nameDefaultValue] = useState(initialName);
+  const [nameValidationValue, setNameValidationValue] = useState(initialName);
+  const [nameHasValue, setNameHasValue] = useState(initialName.trim().length > 0);
+  const nameInputVersion = 0;
+  const [automationType, setAutomationType] = useState<AutomationScheduleType>(editingJob?.schedule.type ?? "daily");
+  const [scheduleTimeDefaultValue] = useState(formatScheduleTimeForInput(initialScheduleTime, timeFormat));
+  const scheduleTimeInputVersion = 0;
   const [scheduleTimeIsValid, setScheduleTimeIsValid] = useState(true);
-  const [scheduleThresholdDefaultValue, setScheduleThresholdDefaultValue] = useState(
-    String(DEFAULT_SCHEDULE_THRESHOLD_MINUTES),
-  );
-  const [scheduleThresholdInputVersion, setScheduleThresholdInputVersion] = useState(0);
+  const [scheduleThresholdDefaultValue] = useState(String(initialScheduleThreshold));
+  const scheduleThresholdInputVersion = 0;
   const [scheduleThresholdIsValid, setScheduleThresholdIsValid] = useState(true);
-  const [includePausedAccounts, setIncludePausedAccounts] = useState(false);
-  const [scheduleTimezone, setScheduleTimezone] = useState(SERVER_DEFAULT_TIMEZONE);
-  const [scheduleDays, setScheduleDays] = useState<AutomationScheduleDay[]>([...DEFAULT_WEEKDAYS]);
-  const [model, setModel] = useState("");
-  const [reasoningEffortValue, setReasoningEffortValue] = useState(DEFAULT_REASONING_EFFORT_VALUE);
+  const [includePausedAccounts, setIncludePausedAccounts] = useState(editingJob?.includePausedAccounts ?? false);
+  const [scheduleTimezone, setScheduleTimezone] = useState(editingJob?.schedule.timezone ?? SERVER_DEFAULT_TIMEZONE);
+  const [scheduleDays, setScheduleDays] = useState<AutomationScheduleDay[]>(() => [
+    ...(editingJob?.schedule.days ?? DEFAULT_WEEKDAYS),
+  ]);
+  const [model, setModel] = useState(editingJob?.model ?? "");
+  const [reasoningEffortValue, setReasoningEffortValue] = useState(
+    editingJob?.reasoningEffort ?? DEFAULT_REASONING_EFFORT_VALUE,
+  );
   const [reasoningEffortTouched, setReasoningEffortTouched] = useState(false);
-  const [promptDefaultValue, setPromptDefaultValue] = useState("ping");
-  const [promptInputVersion, setPromptInputVersion] = useState(0);
-  const [accountIds, setAccountIds] = useState<string[]>([]);
+  const [promptDefaultValue] = useState(editingJob?.prompt ?? "ping");
+  const promptInputVersion = 0;
+  const [accountIds, setAccountIds] = useState<string[]>(() => [...(editingJob?.accountIds ?? [])]);
   const nameRef = useRef<HTMLInputElement | null>(null);
   const timeRef = useRef<HTMLInputElement | null>(null);
   const thresholdRef = useRef<HTMLInputElement | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const reasoningEffortProgrammaticValueRef = useRef<string | null>(null);
   const [touched, setTouched] = useState<Record<CreateFormField, boolean>>({
     name: false,
     model: false,
@@ -227,10 +276,15 @@ export function AutomationJobDialog({
     }
     return FALLBACK_REASONING_EFFORTS;
   }, [selectedModelMetadata]);
+  const effectiveReasoningEffortValue =
+    reasoningEffortValue === DEFAULT_REASONING_EFFORT_VALUE ||
+    availableReasoningEfforts.includes(reasoningEffortValue as AutomationReasoningEffort)
+      ? reasoningEffortValue
+      : DEFAULT_REASONING_EFFORT_VALUE;
   const selectedReasoningEffort =
-    reasoningEffortValue === DEFAULT_REASONING_EFFORT_VALUE
+    effectiveReasoningEffortValue === DEFAULT_REASONING_EFFORT_VALUE
       ? null
-      : (reasoningEffortValue as AutomationReasoningEffort);
+      : (effectiveReasoningEffortValue as AutomationReasoningEffort);
   const shouldPersistReasoningEffortOnUpdate =
     editingJob !== null &&
     selectedModel !== editingJob.model &&
@@ -283,82 +337,6 @@ export function AutomationJobDialog({
     return createFormErrors[field] ?? null;
   };
 
-  const setReasoningEffortValueProgrammatically = (value: string) => {
-    reasoningEffortProgrammaticValueRef.current = value;
-    setReasoningEffortValue(value);
-  };
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    if (editingJob) {
-      setNameDefaultValue(editingJob.name);
-      setNameValidationValue(editingJob.name);
-      setNameHasValue(editingJob.name.trim().length > 0);
-      setNameInputVersion((value) => value + 1);
-      setAutomationType(editingJob.schedule.type);
-      setScheduleTimeValue(editingJob.schedule.time);
-      setScheduleTimeDefaultValue(formatScheduleTimeForInput(editingJob.schedule.time, timeFormat));
-      setScheduleTimeInputVersion((value) => value + 1);
-      setScheduleTimeIsValid(true);
-      const threshold = editingJob.schedule.thresholdMinutes ?? DEFAULT_SCHEDULE_THRESHOLD_MINUTES;
-      setScheduleThresholdDefaultValue(String(threshold));
-      setScheduleThresholdInputVersion((value) => value + 1);
-      setScheduleThresholdIsValid(true);
-      setIncludePausedAccounts(editingJob.includePausedAccounts ?? false);
-      setScheduleTimezone(editingJob.schedule.timezone);
-      setScheduleDays([...editingJob.schedule.days]);
-      setModel(editingJob.model);
-      setReasoningEffortValueProgrammatically(editingJob.reasoningEffort ?? DEFAULT_REASONING_EFFORT_VALUE);
-      setReasoningEffortTouched(false);
-      setPromptDefaultValue(editingJob.prompt);
-      setPromptInputVersion((value) => value + 1);
-      setAccountIds([...editingJob.accountIds]);
-    } else {
-      setNameDefaultValue("");
-      setNameValidationValue("");
-      setNameHasValue(false);
-      setNameInputVersion((value) => value + 1);
-      setAutomationType("daily");
-      setScheduleTimeValue(DEFAULT_SCHEDULE_TIME);
-      setScheduleTimeDefaultValue(formatScheduleTimeForInput(DEFAULT_SCHEDULE_TIME, timeFormat));
-      setScheduleTimeInputVersion((value) => value + 1);
-      setScheduleTimeIsValid(true);
-      setScheduleThresholdDefaultValue(String(DEFAULT_SCHEDULE_THRESHOLD_MINUTES));
-      setScheduleThresholdInputVersion((value) => value + 1);
-      setScheduleThresholdIsValid(true);
-      setIncludePausedAccounts(false);
-      setScheduleTimezone(SERVER_DEFAULT_TIMEZONE);
-      setScheduleDays([...DEFAULT_WEEKDAYS]);
-      setModel("");
-      setReasoningEffortValueProgrammatically(DEFAULT_REASONING_EFFORT_VALUE);
-      setReasoningEffortTouched(false);
-      setPromptDefaultValue("ping");
-      setPromptInputVersion((value) => value + 1);
-      setAccountIds([]);
-    }
-    setTouched({ name: false, model: false, time: false, threshold: false, accounts: false });
-    setSubmitAttempted(false);
-  }, [editingJob, open, timeFormat]);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    setScheduleTimeDefaultValue(formatScheduleTimeForInput(scheduleTimeValue, timeFormat));
-    setScheduleTimeInputVersion((value) => value + 1);
-  }, [open, scheduleTimeValue, timeFormat]);
-
-  useEffect(() => {
-    if (reasoningEffortValue === DEFAULT_REASONING_EFFORT_VALUE) {
-      return;
-    }
-    if (!availableReasoningEfforts.includes(reasoningEffortValue as AutomationReasoningEffort)) {
-      setReasoningEffortValueProgrammatically(DEFAULT_REASONING_EFFORT_VALUE);
-    }
-  }, [availableReasoningEfforts, reasoningEffortValue]);
-
   const handleSubmit = async () => {
     setSubmitAttempted(true);
     const nameValue = (nameRef.current?.value ?? nameDefaultValue).trim();
@@ -373,7 +351,6 @@ export function AutomationJobDialog({
       if (timeRef.current) {
         timeRef.current.value = normalizedTime;
       }
-      setScheduleTimeValue(parsedTime.value);
       setScheduleTimeIsValid(true);
     } else {
       setScheduleTimeIsValid(false);
@@ -443,8 +420,7 @@ export function AutomationJobDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+    <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         <DialogHeader className="px-6 pt-6 pb-2 pr-12">
           <DialogTitle>{isEditing ? "Edit automation" : "Add automation"}</DialogTitle>
           <DialogDescription>
@@ -540,13 +516,8 @@ export function AutomationJobDialog({
                 <div className="space-y-1.5 sm:col-span-2">
                   <label htmlFor={FORM_FIELD_IDS.reasoning} className="text-sm font-medium">Reasoning effort</label>
                   <Select
-                    value={reasoningEffortValue}
+                    value={effectiveReasoningEffortValue}
                     onValueChange={(value) => {
-                      if (reasoningEffortProgrammaticValueRef.current === value) {
-                        reasoningEffortProgrammaticValueRef.current = null;
-                        return;
-                      }
-                      reasoningEffortProgrammaticValueRef.current = null;
                       setReasoningEffortValue(value);
                       setReasoningEffortTouched(true);
                     }}
@@ -601,7 +572,6 @@ export function AutomationJobDialog({
                       if (timeRef.current) {
                         timeRef.current.value = normalized;
                       }
-                      setScheduleTimeValue(parsed.value);
                       setScheduleTimeIsValid(true);
                     }}
                   />
@@ -776,8 +746,7 @@ export function AutomationJobDialog({
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+    </DialogContent>
   );
 
   function toggleScheduleDay(day: AutomationScheduleDay) {
