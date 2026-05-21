@@ -13217,7 +13217,8 @@ def _derive_prompt_cache_key(
 ) -> str:
     """Derive a stable, session-scoped prompt_cache_key when the client does not provide one.
 
-    The generated key is scoped to (model-class, api-key, instructions-prefix, first-user-input) so that:
+    The generated key is scoped to (model-class, api-key, instructions-prefix,
+    instruction-role input, first-user-input) so that:
     - Different model classes get *different* keys (prevents cache pollution).
     - Parallel sessions from the same API key get *different* keys (different first input).
     - Successive turns within one session get the *same* key (first input stays constant).
@@ -13234,6 +13235,10 @@ def _derive_prompt_cache_key(
     if isinstance(instructions, str) and instructions:
         parts.append(sha256(instructions[:512].encode()).hexdigest()[:12])
 
+    instruction_input_text = _extract_instruction_input(payload)
+    if instruction_input_text:
+        parts.append(sha256(instruction_input_text[:512].encode()).hexdigest()[:12])
+
     first_user_text = _extract_first_user_input(payload)
     if first_user_text:
         parts.append(sha256(first_user_text[:512].encode()).hexdigest()[:12])
@@ -13243,6 +13248,28 @@ def _derive_prompt_cache_key(
         return f"{model_class}-{random_suffix}" if model_class is not None else random_suffix
 
     return "-".join([model_class, *parts]) if model_class is not None else "-".join(parts)
+
+
+def _extract_instruction_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
+    input_value = getattr(payload, "input", None)
+    if not isinstance(input_value, list):
+        return None
+    parts: list[str] = []
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") not in ("system", "developer"):
+            continue
+        content_text = _extract_message_content_text(item.get("content"))
+        if content_text:
+            parts.append(content_text)
+        else:
+            parts.append(json.dumps(item, sort_keys=True, ensure_ascii=False))
+        if sum(len(part) for part in parts) >= 512:
+            break
+    if not parts:
+        return None
+    return "\n".join(parts)[:512]
 
 
 def _extract_first_user_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
@@ -13258,16 +13285,34 @@ def _extract_first_user_input(payload: ResponsesRequest | ResponsesCompactReques
         role = item.get("role")
         if role == "user":
             content = item.get("content")
-            if isinstance(content, str):
-                return content[:512]
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        text = part.get("text")
-                        if isinstance(text, str):
-                            return text[:512]
+            content_text = _extract_message_content_text(content)
+            if content_text:
+                return content_text[:512]
             return json.dumps(item, sort_keys=True, ensure_ascii=False)[:512]
     return None
+
+
+def _extract_message_content_text(content: object) -> str | None:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        content_mapping = cast(Mapping[str, object], content)
+        text = content_mapping.get("text")
+        return text if isinstance(text, str) else None
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        part_mapping = cast(Mapping[str, object], part)
+        text = part_mapping.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts) if parts else None
 
 
 def _sticky_key_from_payload(payload: ResponsesRequest) -> str | None:
