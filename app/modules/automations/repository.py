@@ -716,7 +716,6 @@ class AutomationsRepository:
         stale_started_before: datetime,
         limit: int = 500,
     ) -> list[AutomationRunRecord]:
-        del stale_started_before
         result = await self._session.execute(
             select(AutomationRun, AutomationJob.name, AutomationJob.model, AutomationJob.reasoning_effort)
             .join(AutomationJob, AutomationJob.id == AutomationRun.job_id)
@@ -724,7 +723,12 @@ class AutomationsRepository:
             .where(AutomationRun.status == "running")
             .where(AutomationRun.finished_at.is_(None))
             .where(AutomationRun.scheduled_for <= now_utc)
-            .where(AutomationRun.started_at <= AutomationRun.scheduled_for)
+            .where(
+                or_(
+                    AutomationRun.started_at <= AutomationRun.scheduled_for,
+                    AutomationRun.started_at < stale_started_before,
+                )
+            )
             .order_by(AutomationRun.scheduled_for.asc(), AutomationRun.started_at.asc(), AutomationRun.id.asc())
             .limit(limit)
         )
@@ -741,7 +745,6 @@ class AutomationsRepository:
         claimed_started_at: datetime,
         stale_started_before: datetime,
     ) -> AutomationRunRecord | None:
-        del stale_started_before
         result = await self._session.execute(
             update(AutomationRun)
             .where(AutomationRun.id == run_id)
@@ -750,7 +753,12 @@ class AutomationsRepository:
             .where(AutomationRun.finished_at.is_(None))
             .where(AutomationRun.account_id.is_not(None))
             .where(AutomationRun.started_at == observed_started_at)
-            .where(AutomationRun.started_at <= AutomationRun.scheduled_for)
+            .where(
+                or_(
+                    AutomationRun.started_at <= AutomationRun.scheduled_for,
+                    AutomationRun.started_at < stale_started_before,
+                )
+            )
             .values(started_at=claimed_started_at)
             .returning(AutomationRun)
         )

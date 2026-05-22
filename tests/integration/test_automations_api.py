@@ -3217,7 +3217,7 @@ async def test_automations_manual_cycle_does_not_skip_stale_claimed_run_when_acc
 
 
 @pytest.mark.asyncio
-async def test_automations_manual_cycle_does_not_reclaim_stale_claimed_run(async_client, monkeypatch):
+async def test_automations_manual_cycle_reclaims_timed_out_claimed_run(async_client, monkeypatch):
     accounts = await _create_accounts("auto-manual-stale-active-a")
     now = utcnow().replace(second=0, microsecond=0)
     scheduled_for = now - timedelta(hours=3)
@@ -3235,7 +3235,7 @@ async def test_automations_manual_cycle_does_not_reclaim_stale_claimed_run(async
         accounts_repository = AccountsRepository(session)
         service = AutomationsService(automations_repository, accounts_repository)
         job = await automations_repository.create_job(
-            name="Manual stale claimed no reclaim",
+            name="Manual stale claimed reclaim",
             enabled=False,
             include_paused_accounts=False,
             schedule_type="daily",
@@ -3274,12 +3274,12 @@ async def test_automations_manual_cycle_does_not_reclaim_stale_claimed_run(async
         executed = await service.run_due_jobs(now_utc=now)
         stored_run = await automations_repository.get_run(run.id)
 
-    assert executed == 0
-    assert called_chatgpt_account_ids == []
+    assert executed == 1
+    assert called_chatgpt_account_ids == [accounts[0].chatgpt_account_id]
     assert stored_run is not None
-    assert stored_run.status == "running"
+    assert stored_run.status == "success"
     assert stored_run.account_id == accounts[0].id
-    assert stored_run.started_at == claimed_started_at
+    assert stored_run.started_at > claimed_started_at
 
 
 @pytest.mark.asyncio
