@@ -248,6 +248,26 @@ async def test_disabled_or_account_opt_out_does_not_send() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_available_threshold_accepts_nonzero_reset_usage() -> None:
+    repo = FakeWarmupRepo()
+    sender = FakeSender()
+    service = LimitWarmupService(repo, FakeRequestLogsRepo(), sender=sender)
+    account = _account()
+
+    await service.run_after_usage_refresh(
+        accounts=[account],
+        settings=_settings(),
+        before_primary={account.id: _usage(account.id, used_percent=100, reset_at=1000)},
+        before_secondary={},
+        after_primary={account.id: _usage(account.id, used_percent=1, reset_at=2000)},
+        after_secondary={},
+    )
+
+    assert len(sender.calls) == 1
+    assert len(repo.rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_min_available_quota_threshold_uses_remaining_percent() -> None:
     repo = FakeWarmupRepo()
     sender = FakeSender()
