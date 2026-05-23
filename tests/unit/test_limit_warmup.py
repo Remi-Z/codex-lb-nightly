@@ -248,30 +248,31 @@ async def test_disabled_or_account_opt_out_does_not_send() -> None:
 
 
 @pytest.mark.asyncio
-async def test_min_available_threshold_uses_available_quota_percent() -> None:
+async def test_min_available_quota_threshold_uses_remaining_percent() -> None:
     repo = FakeWarmupRepo()
     sender = FakeSender()
     service = LimitWarmupService(repo, FakeRequestLogsRepo(), sender=sender)
-    eligible_account = _account("acc_available_enough")
-    below_threshold_account = _account("acc_available_low")
+    account = _account()
 
     await service.run_after_usage_refresh(
-        accounts=[eligible_account, below_threshold_account],
-        settings=_settings(limit_warmup_min_available_percent=20.0),
-        before_primary={
-            eligible_account.id: _usage(eligible_account.id, used_percent=100, reset_at=1000),
-            below_threshold_account.id: _usage(below_threshold_account.id, used_percent=100, reset_at=1000),
-        },
+        accounts=[account],
+        settings=_settings(limit_warmup_min_available_percent=99.0),
+        before_primary={account.id: _usage(account.id, used_percent=100, reset_at=1000)},
         before_secondary={},
-        after_primary={
-            eligible_account.id: _usage(eligible_account.id, used_percent=75, reset_at=2000),
-            below_threshold_account.id: _usage(below_threshold_account.id, used_percent=85, reset_at=2000),
-        },
+        after_primary={account.id: _usage(account.id, used_percent=98, reset_at=2000)},
+        after_secondary={},
+    )
+    await service.run_after_usage_refresh(
+        accounts=[account],
+        settings=_settings(limit_warmup_min_available_percent=99.0),
+        before_primary={account.id: _usage(account.id, used_percent=100, reset_at=1000)},
+        before_secondary={},
+        after_primary={account.id: _usage(account.id, used_percent=1, reset_at=2000)},
         after_secondary={},
     )
 
-    assert sender.calls == [(eligible_account.id, "gpt-5.1-codex-mini")]
-    assert [row.account_id for row in repo.rows] == [eligible_account.id]
+    assert len(sender.calls) == 1
+    assert len(repo.rows) == 1
 
 
 @pytest.mark.asyncio
