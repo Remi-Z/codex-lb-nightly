@@ -1,7 +1,7 @@
 """add per-account SOCKS5 proxy columns to accounts
 
 Revision ID: 20260523_000000_add_accounts_proxy_columns
-Revises: 20260513_000000_add_accounts_alias
+Revises: 20260525_000000_add_usage_raw_window_latest_index
 Create Date: 2026-05-23
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision = "20260523_000000_add_accounts_proxy_columns"
-down_revision = "20260513_000000_add_accounts_alias"
+down_revision = "20260525_000000_add_usage_raw_window_latest_index"
 branch_labels = None
 depends_on = None
 

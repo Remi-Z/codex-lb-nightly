@@ -380,13 +380,18 @@ export const handlers = [
 	}),
 
 	http.post("/api/accounts/import", async ({ request }) => {
-		const formData = await request.formData();
-		const proxyHost = formData.get("proxyHost");
-		const proxyPort = formData.get("proxyPort");
-		const proxyUsername = formData.get("proxyUsername");
-		const proxyPassword = formData.get("proxyPassword");
-		const proxyRemoteDns = formData.get("proxyRemoteDns");
-		const proxyLabel = formData.get("proxyLabel");
+		let formData: FormData;
+		try {
+			formData = await request.formData();
+		} catch {
+			formData = new FormData();
+		}
+		const proxyHost = formData?.get("proxyHost") ?? null;
+		const proxyPort = formData?.get("proxyPort") ?? null;
+		const proxyUsername = formData?.get("proxyUsername") ?? null;
+		const proxyPassword = formData?.get("proxyPassword") ?? null;
+		const proxyRemoteDns = formData?.get("proxyRemoteDns") ?? null;
+		const proxyLabel = formData?.get("proxyLabel") ?? null;
 		const sequence = state.accounts.length + 1;
 		const created = createAccountSummary({
 			accountId: `acc_imported_${sequence}`,
