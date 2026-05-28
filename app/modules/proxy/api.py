@@ -1862,6 +1862,7 @@ async def v1_chat_completions(
     stream, startup_error = await _probe_chat_stream_startup_error(stream, timeout_seconds=startup_probe_timeout)
     if startup_error is not None:
         if cursor_compat_client and _is_context_length_startup_error(startup_error):
+            await _release_reservation(reservation)
             return _cursor_context_limit_usage_stream(
                 payload,
                 headers=rate_limit_headers,
