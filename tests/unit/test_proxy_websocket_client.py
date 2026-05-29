@@ -206,6 +206,51 @@ async def test_account_websocket_uses_codex_ssl(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_plain_account_websocket_omits_ssl(monkeypatch):
+    fake_connection = _FakeConnection()
+    seen: dict[str, object] = {}
+    codex_ssl_context = object()
+
+    async def fake_websocket_connect(url: str, **kwargs):
+        seen["url"] = url
+        seen["kwargs"] = kwargs
+        return fake_connection
+
+    async def fake_proxy_uri(account_id: str) -> str | None:
+        assert account_id == "account-123"
+        return None
+
+    monkeypatch.setattr(proxy_websocket_module, "websocket_connect", fake_websocket_connect, raising=False)
+    monkeypatch.setattr(proxy_websocket_module, "get_account_websocket_proxy_uri", fake_proxy_uri)
+    monkeypatch.setattr(
+        proxy_websocket_module,
+        "cached_codex_ssl_context",
+        lambda: codex_ssl_context,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        proxy_websocket_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            upstream_base_url="http://upstream.test/backend-api",
+            upstream_connect_timeout_seconds=7.0,
+            max_sse_event_bytes=4321,
+            upstream_websocket_trust_env=False,
+        ),
+    )
+
+    await connect_responses_websocket(
+        {"openai-beta": "responses_websockets=2026-02-06"},
+        "access-token",
+        "account-123",
+    )
+
+    assert seen["url"] == "ws://upstream.test/backend-api/codex/responses"
+    kwargs = cast(dict[str, object], seen["kwargs"])
+    assert "ssl" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_proxied_account_websocket_uses_codex_ssl(monkeypatch):
     fake_connection = _FakeConnection()
     seen: dict[str, object] = {}

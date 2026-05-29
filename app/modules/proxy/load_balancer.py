@@ -25,6 +25,7 @@ from app.core.balancer import (
     select_account,
 )
 from app.core.balancer.types import UpstreamError
+from app.core.clients.account_http import invalidate_account_client
 from app.core.config.settings import get_settings
 from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
@@ -1096,6 +1097,7 @@ class LoadBalancer:
             self._sync_runtime_state(account, state)
             async with self._repo_factory() as repos:
                 await self._persist_state(repos.accounts, account, state)
+            await invalidate_account_client(account.id)
             self._selection_inputs_cache.invalidate()
 
     async def record_error(self, account: Account) -> None:

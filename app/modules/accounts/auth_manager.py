@@ -12,12 +12,14 @@ from typing import Protocol, TypeAlias
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.refresh import RefreshError, TokenRefreshResult, refresh_access_token, should_refresh
 from app.core.balancer import PERMANENT_FAILURE_CODES
+from app.core.clients.account_http import invalidate_account_client
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
+from app.modules.proxy.account_cache import get_account_selection_cache
 
 
 class AccountsRepositoryPort(Protocol):
@@ -208,7 +210,10 @@ class AuthManager:
                     reason,
                     get_request_id(),
                 )
-                await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+                updated = await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+                if updated:
+                    await invalidate_account_client(account.id)
+                    get_account_selection_cache().invalidate()
                 account.status = AccountStatus.DEACTIVATED
                 account.deactivation_reason = reason
             raise

@@ -1350,6 +1350,12 @@ async def test_record_errors_does_not_restore_terminal_status(monkeypatch) -> No
     usage_repo = StubUsageRepository(primary={}, secondary={})
     sticky_repo = StubStickySessionsRepository()
     balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+    invalidated_accounts: list[str] = []
+
+    async def _invalidate_account_client(account_id: str) -> None:
+        invalidated_accounts.append(account_id)
+
+    monkeypatch.setattr(load_balancer_module, "invalidate_account_client", _invalidate_account_client)
 
     original_persist_state_if_current = balancer._persist_state_if_current
     persist_started = asyncio.Event()
@@ -1380,6 +1386,7 @@ async def test_record_errors_does_not_restore_terminal_status(monkeypatch) -> No
     assert account.status == AccountStatus.DEACTIVATED
     assert accounts_repo.status_updates[-1]["status"] == AccountStatus.DEACTIVATED
     assert all(update["status"] != AccountStatus.ACTIVE for update in accounts_repo.status_updates)
+    assert invalidated_accounts == [account.id]
 
 
 @pytest.mark.asyncio

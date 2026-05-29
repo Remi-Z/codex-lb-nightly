@@ -12,6 +12,7 @@ from typing import Mapping, Protocol, cast
 
 from app.core.auth.refresh import RefreshError
 from app.core.balancer import PERMANENT_FAILURE_CODES, QUOTA_EXCEEDED_COOLDOWN_SECONDS
+from app.core.clients.account_http import invalidate_account_client
 from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
@@ -21,6 +22,7 @@ from app.core.utils.request_id import get_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts.auth_manager import AccountsRepositoryPort, AuthManager
+from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
 from app.modules.usage.repository import AdditionalUsageRepository
 
@@ -456,7 +458,10 @@ class UsageUpdater:
             exc.message,
             get_request_id(),
         )
-        await self._auth_manager._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+        updated = await self._auth_manager._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
+        if updated:
+            await invalidate_account_client(account.id)
+            get_account_selection_cache().invalidate()
         account.status = AccountStatus.DEACTIVATED
         account.deactivation_reason = reason
 

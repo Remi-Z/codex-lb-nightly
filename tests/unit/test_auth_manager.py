@@ -462,6 +462,18 @@ async def test_refresh_account_deactivates_when_repo_only_reencrypted_same_refre
         raise RefreshError("invalid_grant", "refresh failed", True)
 
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
+    invalidated_accounts: list[str] = []
+    cache_invalidations: list[str] = []
+
+    async def _invalidate_account_client(account_id: str) -> None:
+        invalidated_accounts.append(account_id)
+
+    monkeypatch.setattr(auth_manager_module, "invalidate_account_client", _invalidate_account_client)
+    monkeypatch.setattr(
+        auth_manager_module,
+        "get_account_selection_cache",
+        lambda: SimpleNamespace(invalidate=lambda: cache_invalidations.append("cache")),
+    )
 
     encryptor = TokenEncryptor()
     stale_refresh = utcnow().replace(year=utcnow().year - 1)
@@ -490,6 +502,8 @@ async def test_refresh_account_deactivates_when_repo_only_reencrypted_same_refre
     assert exc_info.value.is_permanent is True
     assert repo.status_payload is not None
     assert repo.status_payload["status"] == AccountStatus.DEACTIVATED
+    assert invalidated_accounts == [stale_account.id]
+    assert cache_invalidations == ["cache"]
 
 
 @pytest.mark.asyncio
