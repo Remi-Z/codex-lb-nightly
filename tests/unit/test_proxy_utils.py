@@ -6062,6 +6062,7 @@ async def test_http_bridge_keeps_previous_response_pinned_security_work_error(mo
     reconnect.assert_not_awaited()
     assert request_state.replay_count == 0
     assert request_state.previous_response_id == "resp_anchor"
+    assert request_state.event_queue is not None
     warning_block = await request_state.event_queue.get()
     assert warning_block is not None
     warning = json.loads(warning_block.split("data: ", 1)[1])
