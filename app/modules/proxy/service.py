@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import gzip
+import inspect
 import json
 import logging
 import math
@@ -6263,7 +6264,7 @@ class ProxyService:
                 )
             except Exception:
                 logger.warning("Failed to release durable HTTP bridge session", exc_info=True)
-        await self._load_balancer.release_account_lease(session.account_lease)
+        await self._load_balancer.release_account_lease(getattr(session, "account_lease", None))
         session.account_lease = None
         _log_http_bridge_event(
             "close",
@@ -6467,6 +6468,24 @@ class ProxyService:
         except Exception:
             logger.warning("Failed to renew durable HTTP bridge session lease", exc_info=True)
 
+    async def _select_account_with_budget_for_stream(self, deadline: float, **kwargs: Any) -> AccountSelection:
+        selector = self._select_account_with_budget
+        if "lease_kind" in kwargs:
+            try:
+                signature = inspect.signature(selector)
+            except (TypeError, ValueError):
+                signature = None
+            if (
+                signature is not None
+                and "lease_kind" not in signature.parameters
+                and not any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+                )
+            ):
+                kwargs = dict(kwargs)
+                kwargs.pop("lease_kind", None)
+        return await selector(deadline, **kwargs)
+
     async def _create_http_bridge_session(
         self,
         key: "_HTTPBridgeSessionKey",
@@ -6496,23 +6515,23 @@ class ProxyService:
         preferred_candidate_id = preferred_account_id
         selected_account_lease: AccountLease | None = None
         while True:
-            selection = await self._select_account_with_budget(
-                deadline,
-                request_id=request_state.request_log_id or request_state.request_id,
-                kind="http_bridge",
-                request_stage=request_stage,
-                api_key=api_key,
-                sticky_key=affinity.key,
-                sticky_kind=affinity.kind,
-                reallocate_sticky=affinity.reallocate_sticky,
-                sticky_max_age_seconds=affinity.max_age_seconds,
-                prefer_earlier_reset_accounts=settings.prefer_earlier_reset_accounts,
-                routing_strategy=_routing_strategy(settings),
-                model=request_model,
-                exclude_account_ids=excluded_account_ids,
-                preferred_account_id=preferred_candidate_id,
-                lease_kind="stream",
-            )
+            select_kwargs = {
+                "request_id": request_state.request_log_id or request_state.request_id,
+                "kind": "http_bridge",
+                "request_stage": request_stage,
+                "api_key": api_key,
+                "sticky_key": affinity.key,
+                "sticky_kind": affinity.kind,
+                "reallocate_sticky": affinity.reallocate_sticky,
+                "sticky_max_age_seconds": affinity.max_age_seconds,
+                "prefer_earlier_reset_accounts": settings.prefer_earlier_reset_accounts,
+                "routing_strategy": _routing_strategy(settings),
+                "model": request_model,
+                "exclude_account_ids": excluded_account_ids,
+                "preferred_account_id": preferred_candidate_id,
+                "lease_kind": "stream",
+            }
+            selection = await self._select_account_with_budget_for_stream(deadline, **select_kwargs)
             selected_account_lease = selection.lease
             account = selection.account
             if account is None:
@@ -7311,7 +7330,7 @@ class ProxyService:
         preferred_candidate_id: str | None = None if skip_same_account else session.account.id
         selected_account_lease: AccountLease | None = None
         while True:
-            selection = await self._select_account_with_budget(
+            selection = await self._select_account_with_budget_for_stream(
                 deadline,
                 request_id=request_state.request_log_id or request_state.request_id,
                 kind="http_bridge",
@@ -13157,7 +13176,7 @@ def _rewrite_previous_response_stream_error(
             upstream_error_code=normalized_code,
         )
         return (
-            "upstream_unavailable",
+            "previous_response_owner_unavailable",
             "Previous response owner account is unavailable; retry later.",
             normalized_code,
         )

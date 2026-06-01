@@ -302,7 +302,80 @@ async def test_account_response_create_cap_prefers_unsaturated_account() -> None
 
 
 @pytest.mark.asyncio
-async def test_codex_session_sticky_does_not_reallocate_under_budget_pressure() -> None:
+async def test_unbound_codex_session_sticky_filters_saturated_accounts() -> None:
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    account_a = _make_account("acc-hard-sticky-unbound-capped-a")
+    account_b = _make_account("acc-hard-sticky-unbound-capped-b")
+    accounts_repo = _StubAccountsRepository([account_a, account_b])
+    usage_repo = _StubUsageRepository(
+        primary={
+            account_a.id: _usage_row(34, account_a.id, window="primary", reset_at=now_epoch + 300),
+            account_b.id: _usage_row(35, account_b.id, window="primary", reset_at=now_epoch + 300),
+        },
+        secondary={
+            account_a.id: _usage_row(36, account_a.id, window="secondary", reset_at=now_epoch + 3600),
+            account_b.id: _usage_row(37, account_b.id, window="secondary", reset_at=now_epoch + 3600),
+        },
+    )
+    sticky_repo = _StubStickySessionsRepository()
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+    saturated_leases = [await balancer.acquire_account_lease(account_a.id, kind="stream") for _ in range(8)]
+
+    selected = await balancer.select_account(
+        sticky_key="new-hard-session",
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+    )
+
+    assert selected.account is not None
+    assert selected.account.id == account_b.id
+    assert selected.error_code is None
+    assert selected.lease is not None
+    assert sticky_repo.account_id == account_b.id
+
+    for lease in [*saturated_leases, selected.lease]:
+        await balancer.release_account_lease(lease)
+
+
+@pytest.mark.asyncio
+async def test_bound_codex_session_sticky_fails_closed_when_pinned_account_is_saturated() -> None:
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    account_a = _make_account("acc-hard-sticky-bound-capped-a")
+    account_b = _make_account("acc-hard-sticky-bound-capped-b")
+    accounts_repo = _StubAccountsRepository([account_a, account_b])
+    usage_repo = _StubUsageRepository(
+        primary={
+            account_a.id: _usage_row(38, account_a.id, window="primary", reset_at=now_epoch + 300),
+            account_b.id: _usage_row(39, account_b.id, window="primary", reset_at=now_epoch + 300),
+        },
+        secondary={
+            account_a.id: _usage_row(42, account_a.id, window="secondary", reset_at=now_epoch + 3600),
+            account_b.id: _usage_row(43, account_b.id, window="secondary", reset_at=now_epoch + 3600),
+        },
+    )
+    sticky_repo = _StubStickySessionsRepository()
+    sticky_repo.account_id = account_a.id
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+    saturated_leases = [await balancer.acquire_account_lease(account_a.id, kind="stream") for _ in range(8)]
+
+    selected = await balancer.select_account(
+        sticky_key="existing-hard-session",
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        routing_strategy="usage_weighted",
+        lease_kind="stream",
+    )
+
+    assert selected.account is None
+    assert selected.error_code == "account_stream_cap"
+    assert sticky_repo.account_id == account_a.id
+
+    for lease in saturated_leases:
+        await balancer.release_account_lease(lease)
+
+
+@pytest.mark.asyncio
+async def test_codex_session_sticky_reallocates_under_budget_pressure() -> None:
     now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
     account_a = _make_account("acc-hard-sticky-a")
     account_b = _make_account("acc-hard-sticky-b")
@@ -336,7 +409,7 @@ async def test_codex_session_sticky_does_not_reallocate_under_budget_pressure() 
     )
 
     assert result.account is not None
-    assert result.account.id == account_a.id
-    assert sticky_repo.deleted == []
-    assert sticky_repo.account_id == account_a.id
+    assert result.account.id == account_b.id
+    assert sticky_repo.deleted == [("hard-session", StickySessionKind.CODEX_SESSION)]
+    assert sticky_repo.account_id == account_b.id
     await balancer.release_account_lease(result.lease)

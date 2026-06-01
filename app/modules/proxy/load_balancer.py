@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 _MAX_SELECTION_ATTEMPTS = 4
 
 _STICKY_GRACE_PERIOD_SECONDS = 10.0
+_STICKY_EXISTING_UNSET = object()
 _RECOVERABLE_STATUSES = frozenset(
     {
         AccountStatus.ACTIVE,
@@ -232,7 +233,7 @@ class LoadBalancer:
         return True
 
     def _reclaim_stale_account_leases_locked(self) -> None:
-        ttl_seconds = get_settings().proxy_account_lease_ttl_seconds
+        ttl_seconds = getattr(get_settings(), "proxy_account_lease_ttl_seconds", 900.0)
         now = time.monotonic()
         for runtime in self._runtime.values():
             if not runtime.leases:
@@ -465,6 +466,7 @@ class LoadBalancer:
                 break
 
         else:
+            sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET
             attempt = 0
             while True:
                 attempt += 1
@@ -477,7 +479,16 @@ class LoadBalancer:
                         latest_secondary=selection_inputs.latest_secondary,
                         runtime=self._runtime,
                     )
-                hard_sticky = sticky_kind == StickySessionKind.CODEX_SESSION
+                if sticky_key and sticky_kind == StickySessionKind.CODEX_SESSION:
+                    async with self._repo_factory() as repos:
+                        sticky_existing_account_id = await repos.sticky_sessions.get_account_id(
+                            sticky_key,
+                            kind=sticky_kind,
+                            max_age_seconds=sticky_max_age_seconds,
+                        )
+                hard_sticky = sticky_kind == StickySessionKind.CODEX_SESSION and isinstance(
+                    sticky_existing_account_id, str
+                )
                 selection_states = (
                     states if hard_sticky else _filter_states_for_account_caps(states, lease_kind=lease_kind)
                 )
@@ -507,6 +518,7 @@ class LoadBalancer:
                             relative_availability_power=relative_availability_power,
                             relative_availability_top_k=relative_availability_top_k,
                             sticky_repo=repos.sticky_sessions,
+                            sticky_existing_account_id=sticky_existing_account_id,
                         )
                 selected_account_map = account_map
                 selected_states = []
@@ -885,6 +897,7 @@ class LoadBalancer:
         relative_availability_power: float = 2.0,
         relative_availability_top_k: int = 5,
         sticky_repo: StickySessionsRepository | None,
+        sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET,
     ) -> SelectionResult:
         if not sticky_key or not sticky_repo:
             return _select_account_preferring_budget_safe(
@@ -898,13 +911,14 @@ class LoadBalancer:
         if sticky_kind is None:
             raise ValueError("sticky_kind is required when sticky_key is provided")
 
-        existing = await sticky_repo.get_account_id(
-            sticky_key,
-            kind=sticky_kind,
-            max_age_seconds=sticky_max_age_seconds,
-        )
-        hard_sticky = sticky_kind == StickySessionKind.CODEX_SESSION
-
+        if sticky_existing_account_id is _STICKY_EXISTING_UNSET:
+            existing = await sticky_repo.get_account_id(
+                sticky_key,
+                kind=sticky_kind,
+                max_age_seconds=sticky_max_age_seconds,
+            )
+        else:
+            existing = sticky_existing_account_id if isinstance(sticky_existing_account_id, str) else None
         # When the pinned account is temporarily unavailable (rate-limited,
         # error backoff) but still in the pool, pick a fallback WITHOUT
         # overwriting the sticky mapping so the next request returns to the
@@ -916,16 +930,6 @@ class LoadBalancer:
         if existing:
             pinned = next((state for state in states if state.account_id == existing), None)
             if pinned is not None:
-                if hard_sticky:
-                    pinned_result = select_account(
-                        [pinned],
-                        prefer_earlier_reset=prefer_earlier_reset_accounts,
-                        routing_strategy=routing_strategy,
-                        allow_backoff_fallback=False,
-                    )
-                    if pinned_result.account is not None and sticky_max_age_seconds is not None:
-                        await sticky_repo.upsert(sticky_key, pinned.account_id, kind=sticky_kind)
-                    return pinned_result
                 # Proactively rebind session affinity for any sticky kind
                 # once the pinned account is already above the configured
                 # budget threshold. That preserves continuity below the
@@ -937,6 +941,7 @@ class LoadBalancer:
                     in (
                         StickySessionKind.PROMPT_CACHE,
                         StickySessionKind.STICKY_THREAD,
+                        StickySessionKind.CODEX_SESSION,
                     )
                     and pinned.status != AccountStatus.RATE_LIMITED
                     and _state_above_sticky_budget_threshold(pinned, budget_threshold_pct)
@@ -1478,15 +1483,14 @@ def _state_from_account(
         runtime.probe_success_streak = 0
         runtime.health_tier = HEALTH_TIER_HEALTHY
 
-    inflight_pressure_pct = (
-        runtime.inflight_response_creates + runtime.inflight_streams
-    ) * settings.proxy_account_inflight_penalty_pct
+    inflight_pressure_pct = (runtime.inflight_response_creates + runtime.inflight_streams) * getattr(
+        settings, "proxy_account_inflight_penalty_pct", 2.5
+    )
     leased_token_pressure_pct = 0.0
     capacity_credits = usage_core.capacity_for_plan(account.plan_type, "secondary") or 0.0
     if capacity_credits > 0.0 and runtime.leased_tokens > 0:
-        leased_token_pressure_pct = (
-            runtime.leased_tokens * settings.proxy_account_lease_token_weight / capacity_credits * 100.0
-        )
+        lease_token_weight = getattr(settings, "proxy_account_lease_token_weight", 1.0)
+        leased_token_pressure_pct = runtime.leased_tokens * lease_token_weight / capacity_credits * 100.0
     pressure_pct = inflight_pressure_pct + leased_token_pressure_pct
     effective_used_percent = None if used_percent is None else min(100.0, used_percent + pressure_pct)
     effective_secondary_used_percent = None if secondary_used is None else min(100.0, secondary_used + pressure_pct)

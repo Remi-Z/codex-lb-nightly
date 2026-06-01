@@ -6217,8 +6217,8 @@ async def test_connect_proxy_websocket_surfaces_local_connect_overload_without_p
     assert websocket_send.await_args is not None
     sent_payload = json.loads(websocket_send.await_args.args[0])
     assert sent_payload["status"] == 429
-    assert sent_payload["error"]["code"] == "proxy_overloaded"
-    assert request_logs.calls[0]["error_code"] == "proxy_overloaded"
+    assert sent_payload["error"]["code"] == "global_admission_timeout"
+    assert request_logs.calls[0]["error_code"] == "global_admission_timeout"
 
 
 @pytest.mark.asyncio
@@ -6397,9 +6397,9 @@ async def test_connect_proxy_websocket_surfaces_connect_timeout_when_no_failover
     assert await_args is not None
     sent_payload = json.loads(await_args.args[0])
     assert sent_payload["status"] == 502
-    assert sent_payload["error"]["code"] == "previous_response_owner_unavailable"
+    assert sent_payload["error"]["code"] == "upstream_unavailable"
     assert request_logs.calls[0]["account_id"] == first_account.id
-    assert request_logs.calls[0]["error_code"] == "previous_response_owner_unavailable"
+    assert request_logs.calls[0]["error_code"] == "upstream_unavailable"
 
 
 @pytest.mark.asyncio
@@ -13669,10 +13669,10 @@ async def test_stream_previous_response_owner_usage_limit_fails_closed(monkeypat
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["type"] == "response.failed"
-    assert event["response"]["error"]["code"] == "upstream_unavailable"
+    assert event["response"]["error"]["code"] == "previous_response_owner_unavailable"
     assert event["response"]["error"]["message"] == "Previous response owner account is unavailable; retry later."
     assert request_logs.lookup_calls == [("resp_prev_anchor", None, "sid-stream")]
-    assert request_logs.calls[0]["error_code"] == "upstream_unavailable"
+    assert request_logs.calls[0]["error_code"] == "previous_response_owner_unavailable"
     assert request_logs.calls[0]["account_id"] == account_owner.id
     assert len(select_account_calls) == 1
     assert select_account_calls[0]["account_ids"] == {account_owner.id}
@@ -13717,7 +13717,7 @@ async def test_stream_selection_fail_closed_records_owner_unavailable_metric(mon
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["type"] == "response.failed"
-    assert event["response"]["error"]["code"] == "upstream_unavailable"
+    assert event["response"]["error"]["code"] == "previous_response_owner_unavailable"
     assert event["response"]["error"]["message"] == "Previous response owner account is unavailable; retry later."
     assert request_logs.calls[0]["account_id"] == "acc_prev_owner_stream"
     assert "continuity_fail_closed surface=http_stream reason=owner_account_unavailable" in caplog.text
