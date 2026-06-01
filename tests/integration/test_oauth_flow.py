@@ -1780,6 +1780,99 @@ async def test_complete_with_proxy_atomically_probes_and_persists(async_client, 
 
 
 @pytest.mark.asyncio
+async def test_complete_with_proxy_reauth_updates_target_instead_of_duplicate(async_client, monkeypatch):
+    await oauth_module._OAUTH_STORE.reset()
+
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "importWithoutOverwrite": True,
+            "totpRequiredOnLogin": False,
+        },
+    )
+    assert settings.status_code == 200
+
+    email = "oauth-proxy-reauth@example.com"
+    raw_account_id = "acc_oauth_proxy_reauth"
+    account_id = generate_unique_account_id(raw_account_id, email)
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        await repo.upsert(
+            Account(
+                id=account_id,
+                chatgpt_account_id=raw_account_id,
+                email=email,
+                plan_type="plus",
+                access_token_encrypted=encryptor.encrypt("old-access"),
+                refresh_token_encrypted=encryptor.encrypt("old-refresh"),
+                id_token_encrypted=encryptor.encrypt("old-id"),
+                last_refresh=utcnow(),
+                status=AccountStatus.DEACTIVATED,
+                deactivation_reason="token_expired",
+            )
+        )
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "app.modules.accounts.service.probe_account_proxy",
+        _scripted_proxy_probe(_ok_oauth_probe_result(), captured),
+    )
+
+    flow_id = "reauth-proxy-finalize"
+    async with oauth_module._OAUTH_STORE.lock:
+        oauth_module._OAUTH_STORE.remember_flow_locked(
+            oauth_module.OAuthState(
+                flow_id=flow_id,
+                status="tokens_ready",
+                method="device",
+                expect_proxy=True,
+                reauth_account_id=account_id,
+                pending_tokens=_oauth_tokens_for(email, raw_account_id),
+                pending_expires_at=time.time() + 60,
+            )
+        )
+
+    complete = await async_client.post(
+        "/api/oauth/complete",
+        json={
+            "flowId": flow_id,
+            "proxyHost": "proxy.example.com",
+            "proxyPort": 1080,
+            "proxyUsername": _proxy_user_fixture(),
+            "proxyPassword": _proxy_auth_fixture(),
+            "proxyRemoteDns": True,
+            "proxyLabel": "house-1",
+        },
+    )
+    assert complete.status_code == 200, complete.text
+    complete_body = complete.json()
+    assert complete_body["status"] == "success"
+    assert complete_body["accountId"] == account_id
+    assert complete_body["proxy"]["host"] == "proxy.example.com"
+
+    assert captured["refresh_token"] == "oauth-refresh-token"
+
+    accounts = await async_client.get("/api/accounts")
+    assert accounts.status_code == 200
+    matches = [account for account in accounts.json()["accounts"] if account["email"] == email]
+    assert [account["accountId"] for account in matches] == [account_id]
+    assert matches[0]["status"] == "active"
+    assert matches[0]["proxy"]["host"] == "proxy.example.com"
+
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        account = await repo.get_by_id(account_id)
+        assert account is not None
+        assert account.proxy_host == "proxy.example.com"
+        assert account.proxy_label == "house-1"
+        assert encryptor.decrypt(account.access_token_encrypted) == "rotated-oauth-access"
+        assert encryptor.decrypt(account.refresh_token_encrypted) == "rotated-oauth-refresh"
+
+
+@pytest.mark.asyncio
 async def test_complete_with_proxy_probe_failure_preserves_pending_tokens(async_client, monkeypatch):
     """Probe failure must surface 422 and keep tokens for retry."""
 

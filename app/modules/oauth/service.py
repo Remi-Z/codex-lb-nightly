@@ -501,12 +501,21 @@ class OauthService:
                     raise _StaleOAuthAttempt
 
         try:
-            saved = await accounts_service.persist_account_with_optional_proxy(
-                account,
-                proxy_payload=proxy_payload,
-                refresh_token=refresh_token,
-                before_upsert=_ensure_attempt_still_active,
-            )
+            if state_ref is not None and state_ref.reauth_account_id is not None:
+                saved = await accounts_service.reauthenticate_account_with_optional_proxy(
+                    state_ref.reauth_account_id,
+                    account,
+                    proxy_payload=proxy_payload,
+                    refresh_token=refresh_token,
+                    before_update=_ensure_attempt_still_active,
+                )
+            else:
+                saved = await accounts_service.persist_account_with_optional_proxy(
+                    account,
+                    proxy_payload=proxy_payload,
+                    refresh_token=refresh_token,
+                    before_upsert=_ensure_attempt_still_active,
+                )
         except _StaleOAuthAttempt:
             return OauthCompleteResponse(status="error")
         except Exception:

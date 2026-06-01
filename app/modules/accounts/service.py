@@ -302,25 +302,11 @@ class AccountsService:
             # Lock the final account_id before probing so proxy fields and
             # rotated tokens are applied to the same row that will be saved.
             account.id = await self._repo.preview_import_account_id(account.id, account.email)
-            result, rotated_tokens = await self._probe_proxy_payload(
+            await self._probe_and_apply_proxy_payload(
+                account,
                 refresh_token=refresh_token,
-                payload=proxy_payload,
+                proxy_payload=proxy_payload,
             )
-            account.access_token_encrypted = rotated_tokens.access_token_encrypted
-            account.refresh_token_encrypted = rotated_tokens.refresh_token_encrypted
-            account.id_token_encrypted = rotated_tokens.id_token_encrypted
-            account.last_refresh = rotated_tokens.last_refresh
-            account.proxy_host = proxy_payload.host
-            account.proxy_port = proxy_payload.port
-            account.proxy_username = proxy_payload.username
-            account.proxy_password_encrypted = (
-                self._encryptor.encrypt(proxy_payload.password)
-                if proxy_payload.password is not None and not proxy_payload.clear_password
-                else None
-            )
-            account.proxy_remote_dns = proxy_payload.remote_dns
-            account.proxy_label = proxy_payload.label
-            account.proxy_last_validated_at = result.checked_at
 
         if before_upsert is not None:
             await before_upsert()
@@ -335,6 +321,71 @@ class AccountsService:
             await self._usage_updater.refresh_accounts([saved], latest_usage)
         get_account_selection_cache().invalidate()
         return saved
+
+    async def reauthenticate_account_with_optional_proxy(
+        self,
+        account_id: str,
+        account: Account,
+        *,
+        proxy_payload: AccountProxyInput | None,
+        refresh_token: str,
+        before_update: Callable[[], Awaitable[None]] | None = None,
+    ) -> Account:
+        """Re-authenticate an exact target account and optionally refresh its proxy.
+
+        Unlike imports/add-account OAuth, reauth is identity-targeted: duplicate
+        mode must never redirect this write into a ``__copy`` account.
+        """
+
+        if proxy_payload is not None:
+            await self._probe_and_apply_proxy_payload(
+                account,
+                refresh_token=refresh_token,
+                proxy_payload=proxy_payload,
+            )
+
+        if before_update is not None:
+            await before_update()
+        saved = await self._repo.reauthenticate_account(
+            account_id,
+            account,
+            include_proxy_fields=proxy_payload is not None,
+        )
+        if saved is None:
+            raise AccountNotFoundError(account_id)
+        await invalidate_account_client(saved.id)
+        if self._usage_repo and self._usage_updater:
+            latest_usage = await self._usage_repo.latest_by_account(window="primary")
+            await self._usage_updater.refresh_accounts([saved], latest_usage)
+        get_account_selection_cache().invalidate()
+        return saved
+
+    async def _probe_and_apply_proxy_payload(
+        self,
+        account: Account,
+        *,
+        refresh_token: str,
+        proxy_payload: AccountProxyInput,
+    ) -> None:
+        result, rotated_tokens = await self._probe_proxy_payload(
+            refresh_token=refresh_token,
+            payload=proxy_payload,
+        )
+        account.access_token_encrypted = rotated_tokens.access_token_encrypted
+        account.refresh_token_encrypted = rotated_tokens.refresh_token_encrypted
+        account.id_token_encrypted = rotated_tokens.id_token_encrypted
+        account.last_refresh = rotated_tokens.last_refresh
+        account.proxy_host = proxy_payload.host
+        account.proxy_port = proxy_payload.port
+        account.proxy_username = proxy_payload.username
+        account.proxy_password_encrypted = (
+            self._encryptor.encrypt(proxy_payload.password)
+            if proxy_payload.password is not None and not proxy_payload.clear_password
+            else None
+        )
+        account.proxy_remote_dns = proxy_payload.remote_dns
+        account.proxy_label = proxy_payload.label
+        account.proxy_last_validated_at = result.checked_at
 
     async def reactivate_account(self, account_id: str) -> bool:
         result = await self._repo.update_status(account_id, AccountStatus.ACTIVE, None, None, blocked_at=None)

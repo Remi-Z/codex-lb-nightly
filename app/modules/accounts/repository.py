@@ -356,6 +356,8 @@ class AccountsRepository:
         self,
         account_id: str,
         account: Account,
+        *,
+        include_proxy_fields: bool = False,
     ) -> Account | None:
         existing = await self._session.get(Account, account_id)
         if existing is None:
@@ -365,7 +367,7 @@ class AccountsRepository:
             account.chatgpt_account_id = existing.chatgpt_account_id
         if account.email == DEFAULT_EMAIL and existing.email != DEFAULT_EMAIL:
             account.email = existing.email
-        _apply_account_updates(existing, account)
+        _apply_account_updates(existing, account, include_proxy_fields=include_proxy_fields)
         await self._session.commit()
         await self._session.refresh(existing)
         return existing
