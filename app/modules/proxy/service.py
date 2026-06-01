@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Any, AsyncIterator, Literal, Mapping, NoReturn, TypeVar, cast, overload
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -213,12 +214,6 @@ logger = logging.getLogger(__name__)
 
 _UPSTREAM_RESPONSE_CREATE_MAX_BYTES = get_settings().upstream_response_create_max_bytes
 _UPSTREAM_RESPONSE_CREATE_WARN_BYTES = int(_UPSTREAM_RESPONSE_CREATE_MAX_BYTES * 0.8)
-# Use the deploy's resolved data directory so non-container installs
-# (notably macOS ``uv tool`` / LaunchAgent layouts that don't have
-# ``/var/lib/codex-lb`` writable) still get oversized-payload dumps.
-# The container image keeps writing to ``/var/lib/codex-lb`` because
-# ``DEFAULT_HOME_DIR`` resolves to that path inside the image.
-_OVERSIZED_RESPONSE_CREATE_DUMP_DIR = DEFAULT_HOME_DIR / "debug" / "response-create-dumps"
 _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS = 10
 _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE = (
     "[codex-lb omitted {count} historical input items to fit upstream websocket budget]"
@@ -227,6 +222,15 @@ _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE = (
     "[codex-lb omitted historical tool output ({bytes} bytes) to fit upstream websocket budget]"
 )
 _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE = "[codex-lb omitted historical inline image to fit upstream websocket budget]"
+_OVERSIZED_RESPONSE_CREATE_DUMP_DIR: Path | None = None
+
+
+def _oversized_response_create_dump_dir() -> Path:
+    if _OVERSIZED_RESPONSE_CREATE_DUMP_DIR is not None:
+        return _OVERSIZED_RESPONSE_CREATE_DUMP_DIR
+    data_dir = getattr(get_settings(), "data_dir", DEFAULT_HOME_DIR)
+    return data_dir / "debug" / "response-create-dumps"
+
 
 _TASK_CANCEL_TIMEOUT_SECONDS = 1.0
 _TaskResultT = TypeVar("_TaskResultT")
@@ -13395,7 +13399,7 @@ def _write_response_create_dump(
             ),
         )
     )
-    dump_dir = _OVERSIZED_RESPONSE_CREATE_DUMP_DIR
+    dump_dir = _oversized_response_create_dump_dir()
     dump_path = dump_dir / f"{dump_id}.response-create.json.gz"
     meta_path = dump_dir / f"{dump_id}.meta.json"
 
