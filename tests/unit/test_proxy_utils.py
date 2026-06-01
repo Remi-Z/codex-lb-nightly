@@ -14170,6 +14170,7 @@ async def test_stream_previous_response_owner_lookup_miss_fails_before_selection
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_previous_response_owner_miss_can_continue", AsyncMock(return_value=False))
     select_account = AsyncMock(return_value=AccountSelection(account=_make_account("acc_other"), error_message=None))
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
 

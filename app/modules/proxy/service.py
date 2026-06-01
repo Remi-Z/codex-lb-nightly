@@ -10085,6 +10085,15 @@ class ProxyService:
             headers.update(_credits_headers(await self._latest_usage_entries(repos, account_map)))
         return headers
 
+    async def _previous_response_owner_miss_can_continue(self) -> bool:
+        try:
+            async with self._repo_factory() as repos:
+                accounts = await repos.accounts.list_accounts()
+                return len(_select_accounts_for_limits(accounts)) <= 1
+        except Exception:
+            logger.warning("Previous response owner miss fallback account scan failed", exc_info=True)
+            return False
+
     async def get_rate_limit_payload(self) -> RateLimitStatusPayloadData:
         async with self._repo_factory() as repos:
             accounts = await repos.accounts.list_accounts()
@@ -10207,35 +10216,37 @@ class ProxyService:
                 )
                 require_preferred_account = True
                 if preferred_account_id is None:
-                    message = "Previous response owner account is unavailable; retry later."
-                    _record_continuity_fail_closed(
-                        surface="http_stream",
-                        reason="owner_lookup_miss",
-                        previous_response_id=payload.previous_response_id,
-                        session_id=headers.get("x-codex-turn-state") or headers.get("session_id"),
-                        upstream_error_code="owner_lookup_miss",
-                    )
-                    event = response_failed_event(
-                        "previous_response_owner_unavailable",
-                        message,
-                        response_id=request_id,
-                    )
-                    yield format_sse_event(event)
-                    await self._write_request_log(
-                        account_id=None,
-                        api_key=api_key,
-                        request_id=request_id,
-                        model=payload.model,
-                        latency_ms=int((time.monotonic() - start) * 1000),
-                        status="error",
-                        error_code="previous_response_owner_unavailable",
-                        error_message=message,
-                        reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
-                        transport=request_transport,
-                        service_tier=payload.service_tier,
-                        requested_service_tier=payload.service_tier,
-                    )
-                    return
+                    require_preferred_account = False
+                    if not await self._previous_response_owner_miss_can_continue():
+                        message = "Previous response owner account is unavailable; retry later."
+                        _record_continuity_fail_closed(
+                            surface="http_stream",
+                            reason="owner_lookup_miss",
+                            previous_response_id=payload.previous_response_id,
+                            session_id=headers.get("x-codex-turn-state") or headers.get("session_id"),
+                            upstream_error_code="owner_lookup_miss",
+                        )
+                        event = response_failed_event(
+                            "previous_response_owner_unavailable",
+                            message,
+                            response_id=request_id,
+                        )
+                        yield format_sse_event(event)
+                        await self._write_request_log(
+                            account_id=None,
+                            api_key=api_key,
+                            request_id=request_id,
+                            model=payload.model,
+                            latency_ms=int((time.monotonic() - start) * 1000),
+                            status="error",
+                            error_code="previous_response_owner_unavailable",
+                            error_message=message,
+                            reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                            transport=request_transport,
+                            service_tier=payload.service_tier,
+                            requested_service_tier=payload.service_tier,
+                        )
+                        return
             file_required_preferred_account = False
             if preferred_account_id is None:
                 # ``input_file.file_id`` references must land on the account
