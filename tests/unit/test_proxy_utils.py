@@ -14160,6 +14160,39 @@ async def test_stream_selection_fail_closed_records_owner_unavailable_metric(mon
 
 
 @pytest.mark.asyncio
+async def test_stream_previous_response_owner_lookup_miss_fails_before_selection(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    select_account = AsyncMock(return_value=AccountSelection(account=_make_account("acc_other"), error_message=None))
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [],
+            "stream": True,
+            "previous_response_id": "resp_prev_missing",
+        }
+    )
+
+    chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
+
+    event = json.loads(chunks[0].split("data: ", 1)[1])
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "previous_response_owner_unavailable"
+    assert event["response"]["error"]["message"] == "Previous response owner account is unavailable; retry later."
+    assert request_logs.calls[0]["account_id"] is None
+    assert request_logs.calls[0]["error_code"] == "previous_response_owner_unavailable"
+    select_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_compact_responses_budget_exhaustion_returns_request_timeout(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     request_logs = _RequestLogsRecorder()
