@@ -75,9 +75,8 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.UniqueConstraint("pool_id", "endpoint_id", name="uq_proxy_pool_members_pool_endpoint"),
         )
-    if (
-        _has_table(bind, "proxy_pool_members")
-        and "idx_proxy_pool_members_pool_order" not in _indexes(bind, "proxy_pool_members")
+    if _has_table(bind, "proxy_pool_members") and "idx_proxy_pool_members_pool_order" not in _indexes(
+        bind, "proxy_pool_members"
     ):
         op.create_index(
             "idx_proxy_pool_members_pool_order",
@@ -153,9 +152,8 @@ def downgrade() -> None:
                 batch_op.drop_column("upstream_proxy_routing_enabled")
     if _has_table(bind, "account_proxy_bindings"):
         op.drop_table("account_proxy_bindings")
-    if (
-        _has_table(bind, "proxy_pool_members")
-        and "idx_proxy_pool_members_pool_order" in _indexes(bind, "proxy_pool_members")
+    if _has_table(bind, "proxy_pool_members") and "idx_proxy_pool_members_pool_order" in _indexes(
+        bind, "proxy_pool_members"
     ):
         op.drop_index("idx_proxy_pool_members_pool_order", table_name="proxy_pool_members")
     if _has_table(bind, "proxy_pool_members"):
