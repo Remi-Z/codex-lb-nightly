@@ -6643,6 +6643,59 @@ async def test_select_websocket_connect_account_stream_cap_is_local_overload(mon
 
 
 @pytest.mark.asyncio
+async def test_select_websocket_file_pin_stream_cap_does_not_fall_back(monkeypatch):
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_file_pin_stream_cap",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        preferred_account_id="acc_file_owner",
+        file_required_preferred_account=True,
+    )
+    select_account = AsyncMock(
+        return_value=AccountSelection(
+            account=None,
+            error_message="All eligible accounts are at the stream cap",
+            error_code="account_stream_cap",
+        )
+    )
+    websocket_send = AsyncMock()
+
+    monkeypatch.setattr(service, "_select_account_with_budget", select_account)
+
+    result = await service._select_websocket_connect_account(
+        10_000.0,
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        model="gpt-5.1",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=cast(WebSocket, SimpleNamespace(send_text=websocket_send)),
+        reallocate_sticky=False,
+        sticky_max_age_seconds=None,
+        exclude_account_ids=set(),
+        preferred_account_id="acc_file_owner",
+        require_preferred_account=True,
+    )
+
+    assert result is None
+    assert select_account.await_args is not None
+    assert select_account.await_args.kwargs["fallback_on_preferred_account_unavailable"] is False
+    await_args = websocket_send.await_args
+    assert await_args is not None
+    sent_payload = json.loads(await_args.args[0])
+    assert sent_payload["status"] == 429
+    assert sent_payload["error"]["code"] == "account_stream_cap"
+    assert sent_payload["error"]["type"] == "rate_limit_error"
+
+
+@pytest.mark.asyncio
 async def test_connect_proxy_websocket_fails_over_after_forced_refresh_transport_error(monkeypatch):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))

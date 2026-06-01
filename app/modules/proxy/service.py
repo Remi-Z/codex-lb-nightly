@@ -1526,6 +1526,9 @@ class ProxyService:
                 durable_lookup=durable_lookup,
                 request_stage=retry_request_stage,
                 preferred_account_id=retry_preferred_account_id,
+                fallback_on_preferred_account_unavailable=not (
+                    file_required_preferred_account and retry_preferred_account_id is not None
+                ),
             )
             _record_bridge_reattach(path=recovery_path, outcome="success")
 
@@ -4294,10 +4297,12 @@ class ProxyService:
         # never overrides existing routing.
         if request_state.preferred_account_id is None:
             request_state.preferred_account_id = rewritten_file_account_id
+            request_state.file_required_preferred_account = request_state.preferred_account_id is not None
         if request_state.preferred_account_id is None:
             request_state.preferred_account_id = await self._resolve_file_account_for_responses(
                 responses_payload, headers
             )
+            request_state.file_required_preferred_account = request_state.preferred_account_id is not None
 
         # Direct WebSocket retry-safety classification.
         #
@@ -4603,7 +4608,7 @@ class ProxyService:
             preferred_account_id = forced_refresh_account_id or request_state.preferred_account_id
             require_preferred_account = (
                 request_state.previous_response_id is not None and request_state.preferred_account_id is not None
-            )
+            ) or request_state.file_required_preferred_account
             try:
                 account = await self._select_websocket_connect_account(
                     deadline,
@@ -4756,6 +4761,7 @@ class ProxyService:
                 exclude_account_ids=exclude_account_ids,
                 preferred_account_id=preferred_account_id,
                 lease_kind="stream",
+                fallback_on_preferred_account_unavailable=not require_preferred_account,
             )
         except ProxyResponseError as exc:
             if _is_proxy_budget_exhausted_error(exc):
@@ -4809,6 +4815,23 @@ class ProxyService:
         error_code = selection.error_code or "no_accounts"
         error_message = selection.error_message or "No active accounts available"
         if require_preferred_account and preferred_account_id is not None:
+            if request_state.file_required_preferred_account and _is_local_account_cap_code(error_code):
+                await self._emit_websocket_connect_failure(
+                    websocket,
+                    client_send_lock=client_send_lock,
+                    account_id=preferred_account_id,
+                    api_key=api_key,
+                    request_state=request_state,
+                    status_code=429,
+                    payload=openai_error(
+                        error_code,
+                        error_message,
+                        error_type="rate_limit_error",
+                    ),
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                return None
             message = "Previous response owner account is unavailable; retry later."
             _record_continuity_fail_closed(
                 surface="websocket_connect",
@@ -6107,7 +6130,9 @@ class ProxyService:
 
             created_session: _HTTPBridgeSession | None = None
             session_registered = False
-            require_preferred_account = previous_response_id is not None and preferred_account_id is not None
+            require_preferred_account = (previous_response_id is not None and preferred_account_id is not None) or (
+                preferred_account_id is not None and not fallback_on_preferred_account_unavailable
+            )
             try:
                 created_session = await self._create_http_bridge_session(
                     key,
@@ -11997,6 +12022,7 @@ class _WebSocketRequestState:
     fresh_upstream_request_is_retry_safe: bool = False
     request_stage: str = "first_turn"
     preferred_account_id: str | None = None
+    file_required_preferred_account: bool = False
     error_code_override: str | None = None
     error_message_override: str | None = None
     error_type_override: str | None = None
