@@ -17,6 +17,7 @@ from app.core.openai.models import OpenAIError, ResponseUsage
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.plan_types import account_plan_matches_allowed
+from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.usage.pricing import get_pricing_for_model
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountLimitWarmup, AccountStatus, DashboardSettings, UsageHistory
@@ -148,6 +149,16 @@ class StreamingLimitWarmupSender:
                 error_code="account_not_active",
                 error_message=f"Account status is {fresh_account.status.value}",
             )
+        try:
+            route = await self._resolve_upstream_route(fresh_account)
+        except UpstreamProxyRouteError as exc:
+            return LimitWarmupSendResult(
+                request_id=request_id,
+                success=False,
+                latency_ms=_elapsed_ms(started),
+                error_code="upstream_proxy_unavailable",
+                error_message=f"Upstream proxy route unavailable: {exc.reason}",
+            )
 
         payload = ResponsesRequest.model_validate(
             {
@@ -178,6 +189,8 @@ class StreamingLimitWarmupSender:
                 access_token,
                 chatgpt_account_id,
                 upstream_stream_transport_override="http",
+                route=route,
+                allow_direct_egress=route is None,
             ):
                 event = parse_sse_event(event_block)
                 if event is None:
@@ -219,6 +232,15 @@ class StreamingLimitWarmupSender:
                 accounts_repo,
                 refresh_repo_factory=self._accounts_repo_factory,
             ).ensure_fresh(account)
+
+    async def _resolve_upstream_route(self, account: Account) -> ResolvedUpstreamRoute | None:
+        return await resolve_upstream_route(
+            self._accounts_repo.session,
+            account_id=account.id,
+            operation="limit_warmup",
+            scope="account",
+            encryptor=self._encryptor,
+        )
 
 
 class LimitWarmupService:

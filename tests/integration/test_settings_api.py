@@ -12,6 +12,8 @@ async def test_settings_api_get_and_update(async_client):
     payload = response.json()
     assert payload["stickyThreadsEnabled"] is True
     assert payload["upstreamStreamTransport"] == "default"
+    assert payload["upstreamProxyRoutingEnabled"] is False
+    assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is True
     assert payload["routingStrategy"] == "capacity_weighted"
     assert payload["relativeAvailabilityPower"] == 2.0
@@ -37,6 +39,8 @@ async def test_settings_api_get_and_update(async_client):
         json={
             "stickyThreadsEnabled": False,
             "upstreamStreamTransport": "websocket",
+            "upstreamProxyRoutingEnabled": True,
+            "upstreamProxyDefaultPoolId": None,
             "preferEarlierResetAccounts": False,
             "routingStrategy": "relative_availability",
             "relativeAvailabilityPower": 1.5,
@@ -61,6 +65,8 @@ async def test_settings_api_get_and_update(async_client):
     updated = response.json()
     assert updated["stickyThreadsEnabled"] is False
     assert updated["upstreamStreamTransport"] == "websocket"
+    assert updated["upstreamProxyRoutingEnabled"] is True
+    assert updated["upstreamProxyDefaultPoolId"] is None
     assert updated["preferEarlierResetAccounts"] is False
     assert updated["routingStrategy"] == "relative_availability"
     assert updated["relativeAvailabilityPower"] == 1.5
@@ -86,6 +92,8 @@ async def test_settings_api_get_and_update(async_client):
     payload = response.json()
     assert payload["stickyThreadsEnabled"] is False
     assert payload["upstreamStreamTransport"] == "websocket"
+    assert payload["upstreamProxyRoutingEnabled"] is True
+    assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is False
     assert payload["routingStrategy"] == "relative_availability"
     assert payload["relativeAvailabilityPower"] == 1.5
@@ -105,3 +113,55 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["limitWarmupPrompt"] == "Say OK."
     assert payload["limitWarmupCooldownSeconds"] == 7200
     assert payload["limitWarmupMinAvailablePercent"] == 99.0
+
+
+@pytest.mark.asyncio
+async def test_upstream_proxy_admin_controls(async_client):
+    endpoint = await async_client.post(
+        "/api/settings/upstream-proxy/endpoints",
+        json={
+            "name": "Proxy A",
+            "scheme": "http",
+            "host": "proxy.internal",
+            "port": 8080,
+            "username": "user",
+            "password": "secret",
+        },
+    )
+    assert endpoint.status_code == 200
+    endpoint_payload = endpoint.json()
+    assert endpoint_payload["host"] == "proxy.internal"
+    assert "password" not in endpoint_payload
+
+    pool = await async_client.post(
+        "/api/settings/upstream-proxy/pools",
+        json={"name": "Pool A", "endpointIds": [endpoint_payload["id"]]},
+    )
+    assert pool.status_code == 200
+    pool_payload = pool.json()
+    assert pool_payload["endpointIds"] == [endpoint_payload["id"]]
+
+    settings = await async_client.get("/api/settings")
+    body = settings.json()
+    body["upstreamProxyRoutingEnabled"] = True
+    body["upstreamProxyDefaultPoolId"] = pool_payload["id"]
+    updated = await async_client.put("/api/settings", json=body)
+    assert updated.status_code == 200
+    assert updated.json()["upstreamProxyDefaultPoolId"] == pool_payload["id"]
+
+    body["upstreamProxyDefaultPoolId"] = None
+    cleared = await async_client.put("/api/settings", json=body)
+    assert cleared.status_code == 200
+    assert cleared.json()["upstreamProxyDefaultPoolId"] is None
+
+    body["upstreamProxyDefaultPoolId"] = pool_payload["id"]
+    updated = await async_client.put("/api/settings", json=body)
+    assert updated.status_code == 200
+
+    admin = await async_client.get("/api/settings/upstream-proxy")
+    assert admin.status_code == 200
+    admin_payload = admin.json()
+    assert admin_payload["routingEnabled"] is True
+    assert admin_payload["defaultPoolId"] == pool_payload["id"]
+    assert admin_payload["endpoints"][0]["id"] == endpoint_payload["id"]
+    assert admin_payload["pools"][0]["endpointIds"] == [endpoint_payload["id"]]

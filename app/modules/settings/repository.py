@@ -22,6 +22,8 @@ class SettingsRepository:
             id=_SETTINGS_ID,
             sticky_threads_enabled=True,
             upstream_stream_transport="default",
+            upstream_proxy_routing_enabled=False,
+            upstream_proxy_default_pool_id=None,
             prefer_earlier_reset_accounts=True,
             routing_strategy="capacity_weighted",
             relative_availability_power=2.0,
@@ -60,6 +62,8 @@ class SettingsRepository:
         *,
         sticky_threads_enabled: bool | None = None,
         upstream_stream_transport: str | None = None,
+        upstream_proxy_routing_enabled: bool | None = None,
+        upstream_proxy_default_pool_id: str | None = None,
         prefer_earlier_reset_accounts: bool | None = None,
         routing_strategy: str | None = None,
         relative_availability_power: float | None = None,
@@ -84,6 +88,9 @@ class SettingsRepository:
             settings.sticky_threads_enabled = sticky_threads_enabled
         if upstream_stream_transport is not None:
             settings.upstream_stream_transport = upstream_stream_transport
+        if upstream_proxy_routing_enabled is not None:
+            settings.upstream_proxy_routing_enabled = upstream_proxy_routing_enabled
+        settings.upstream_proxy_default_pool_id = upstream_proxy_default_pool_id or None
         if prefer_earlier_reset_accounts is not None:
             settings.prefer_earlier_reset_accounts = prefer_earlier_reset_accounts
         if routing_strategy is not None:

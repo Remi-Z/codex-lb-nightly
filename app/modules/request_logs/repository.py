@@ -190,6 +190,11 @@ class RequestLogsRepository:
         session_id: str | None = None,
         plan_type: str | None = None,
         source: str | None = None,
+        upstream_proxy_route_mode: str | None = None,
+        upstream_proxy_pool_id: str | None = None,
+        upstream_proxy_endpoint_id: str | None = None,
+        upstream_proxy_fallback_used: bool | None = None,
+        upstream_proxy_fail_closed_reason: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
@@ -219,6 +224,11 @@ class RequestLogsRepository:
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
+                upstream_proxy_route_mode=upstream_proxy_route_mode,
+                upstream_proxy_pool_id=upstream_proxy_pool_id,
+                upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
+                upstream_proxy_fallback_used=upstream_proxy_fallback_used,
+                upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 requested_at=requested_at or utcnow(),
             )
             log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))

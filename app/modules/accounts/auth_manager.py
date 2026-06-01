@@ -15,8 +15,10 @@ from app.core.balancer import PERMANENT_FAILURE_CODES
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
+from app.core.upstream_proxy import resolve_upstream_route
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
+from app.db.session import get_background_session
 
 
 class AccountsRepositoryPort(Protocol):
@@ -186,7 +188,7 @@ class AuthManager:
     async def refresh_account(self, account: Account) -> Account:
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
         try:
-            result = await self._refresh_tokens(refresh_token)
+            result = await self._refresh_tokens(refresh_token, account=account)
         except RefreshError as exc:
             if exc.is_permanent:
                 latest = await self._repo.get_by_id(account.id)
@@ -230,12 +232,24 @@ class AuthManager:
         )
         return account
 
-    async def _refresh_tokens(self, refresh_token: str) -> TokenRefreshResult:
+    async def _refresh_tokens(self, refresh_token: str, *, account: Account) -> TokenRefreshResult:
         refresh_lease: RefreshAdmissionLeasePort | None = None
         if self._acquire_refresh_admission is not None:
             refresh_lease = await self._acquire_refresh_admission()
         try:
-            return await refresh_access_token(refresh_token)
+            async with get_background_session() as session:
+                route = await resolve_upstream_route(
+                    session,
+                    account_id=account.id,
+                    operation="token_refresh",
+                    scope="account",
+                    encryptor=self._encryptor,
+                )
+            return await refresh_access_token(
+                refresh_token,
+                route=route,
+                allow_direct_egress=route is None,
+            )
         finally:
             if refresh_lease is not None:
                 refresh_lease.release()

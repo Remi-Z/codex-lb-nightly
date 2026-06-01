@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountLimitWarmup, AccountStatus, DashboardSettings, UsageHistory
 from app.modules.limit_warmup import service as limit_warmup_service
-from app.modules.limit_warmup.service import LimitWarmupSendResult, LimitWarmupService
+from app.modules.limit_warmup.service import LimitWarmupSendResult, LimitWarmupService, StreamingLimitWarmupSender
 
 pytestmark = pytest.mark.unit
 
@@ -271,6 +273,74 @@ class CoordinatedSender:
             success=True,
             latency_ms=12,
         )
+
+
+class _WarmupAccountsRepo:
+    session = object()
+
+
+@pytest.mark.asyncio
+async def test_streaming_limit_warmup_sender_passes_resolved_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    account = _account()
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_1",
+        endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080),
+    )
+    calls: dict[str, Any] = {}
+    sender = StreamingLimitWarmupSender(cast(Any, _WarmupAccountsRepo()))
+
+    async def ensure_fresh(target: Account) -> Account:
+        return target
+
+    async def resolve_route(*args: object, **kwargs: object) -> ResolvedUpstreamRoute:
+        calls["resolve_kwargs"] = kwargs
+        return route
+
+    async def stream(*args: object, **kwargs: object):
+        calls["stream_kwargs"] = kwargs
+        yield 'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
+
+    monkeypatch.setattr(sender, "_ensure_fresh", ensure_fresh)
+    monkeypatch.setattr(sender._encryptor, "decrypt", lambda value: "access")
+    monkeypatch.setattr(limit_warmup_service, "resolve_upstream_route", resolve_route)
+    monkeypatch.setattr(limit_warmup_service, "stream_responses", stream)
+
+    result = await sender.send(account, model="gpt-5.2", prompt="Say OK.")
+
+    assert result.success is True
+    assert calls["resolve_kwargs"]["account_id"] == account.id
+    assert calls["resolve_kwargs"]["operation"] == "limit_warmup"
+    assert calls["stream_kwargs"]["route"] is route
+
+
+@pytest.mark.asyncio
+async def test_streaming_limit_warmup_sender_fails_closed_when_route_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _account()
+    sender = StreamingLimitWarmupSender(cast(Any, _WarmupAccountsRepo()))
+
+    async def ensure_fresh(target: Account) -> Account:
+        return target
+
+    async def resolve_route(*args: object, **kwargs: object) -> ResolvedUpstreamRoute:
+        raise UpstreamProxyRouteError("default_pool_unconfigured", account_id=account.id)
+
+    async def stream(*args: object, **kwargs: object):
+        raise AssertionError("stream_responses must not run when route resolution fails")
+        yield ""
+
+    monkeypatch.setattr(sender, "_ensure_fresh", ensure_fresh)
+    monkeypatch.setattr(sender._encryptor, "decrypt", lambda value: "access")
+    monkeypatch.setattr(limit_warmup_service, "resolve_upstream_route", resolve_route)
+    monkeypatch.setattr(limit_warmup_service, "stream_responses", stream)
+
+    result = await sender.send(account, model="gpt-5.2", prompt="Say OK.")
+
+    assert result.success is False
+    assert result.error_code == "upstream_proxy_unavailable"
+    assert "default_pool_unconfigured" in (result.error_message or "")
 
 
 @pytest.mark.asyncio

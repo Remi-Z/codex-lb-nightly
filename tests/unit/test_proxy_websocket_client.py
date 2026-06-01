@@ -82,6 +82,7 @@ async def test_connect_responses_websocket_uses_websockets_transport(monkeypatch
         },
         "access-token",
         "account-123",
+        allow_direct_egress=True,
     )
 
     await websocket.send_text("hello")
@@ -133,6 +134,7 @@ async def test_connect_responses_websocket_appends_required_beta_header(monkeypa
         {"OpenAI-Beta": "assistants=v2"},
         "access-token",
         None,
+        allow_direct_egress=True,
     )
 
     kwargs = cast(dict[str, object], seen["kwargs"])
@@ -170,6 +172,7 @@ async def test_connect_responses_websocket_maps_invalid_status(monkeypatch):
             {"openai-beta": "responses_websockets=2026-02-06"},
             "access-token",
             "account-123",
+            allow_direct_egress=True,
         )
 
     assert exc_info.value.status_code == 403
@@ -200,7 +203,12 @@ async def test_connect_responses_websocket_can_opt_in_to_env_proxy(monkeypatch):
         ),
     )
 
-    await connect_responses_websocket({"openai-beta": "responses_websockets=2026-02-06"}, "access-token", None)
+    await connect_responses_websocket(
+        {"openai-beta": "responses_websockets=2026-02-06"},
+        "access-token",
+        None,
+        allow_direct_egress=True,
+    )
 
     kwargs = cast(dict[str, object], seen["kwargs"])
     assert kwargs["proxy"] is True
@@ -230,6 +238,7 @@ async def test_connect_responses_websocket_maps_generic_invalid_handshake(monkey
             {"openai-beta": "responses_websockets=2026-02-06"},
             "access-token",
             "account-123",
+            allow_direct_egress=True,
         )
 
     assert exc_info.value.status_code == 502
@@ -261,6 +270,7 @@ async def test_connect_responses_websocket_maps_invalid_proxy(monkeypatch):
             {"openai-beta": "responses_websockets=2026-02-06"},
             "access-token",
             "account-123",
+            allow_direct_egress=True,
         )
 
     assert exc_info.value.status_code == 502
