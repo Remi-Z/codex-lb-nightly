@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import time
+from types import SimpleNamespace
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
@@ -45,6 +46,26 @@ def _proxy_auth_fixture(suffix: str = "primary") -> str:
 
 def _proxy_user_fixture() -> str:
     return "proxy-user-fixture"
+
+
+def test_oauth_redirect_uri_uses_callback_host_when_present() -> None:
+    assert (
+        oauth_module._oauth_redirect_uri(
+            "dashboard.example.test",
+            settings=SimpleNamespace(oauth_redirect_uri="http://localhost:1455/auth/callback"),
+        )
+        == "http://dashboard.example.test:1455/auth/callback"
+    )
+
+
+def test_oauth_redirect_uri_preserves_configured_uri_without_callback_host() -> None:
+    assert (
+        oauth_module._oauth_redirect_uri(
+            None,
+            settings=SimpleNamespace(oauth_redirect_uri="http://localhost:1455/auth/callback"),
+        )
+        == "http://localhost:1455/auth/callback"
+    )
 
 
 @pytest.mark.asyncio
@@ -768,7 +789,7 @@ async def test_browser_oauth_redirect_uses_registered_uri_and_matches_token_exch
     )
     assert start.status_code == 200
     payload = start.json()
-    expected_callback_url = "http://localhost:1455/auth/callback"
+    expected_callback_url = "http://dashboard.example.test:1455/auth/callback"
     assert payload["callbackUrl"] == expected_callback_url
     assert parse_qs(urlparse(payload["authorizationUrl"]).query)["redirect_uri"] == [expected_callback_url]
 

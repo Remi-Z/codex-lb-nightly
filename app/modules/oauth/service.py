@@ -10,6 +10,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 from aiohttp import web
@@ -90,7 +91,25 @@ class OauthReauthTargetError(ValueError):
 def _oauth_redirect_uri(callback_host: str | None, *, settings: Settings | None = None) -> str:
     effective_settings = settings or get_settings()
     configured = effective_settings.oauth_redirect_uri.strip()
-    return configured
+
+    if not callback_host:
+        return configured
+
+    parsed = urlparse(configured)
+    if not parsed.scheme or not parsed.netloc or parsed.hostname is None:
+        return configured
+
+    if ":" in callback_host:
+        netloc = callback_host
+    elif parsed.port is not None:
+        netloc = f"{callback_host}:{parsed.port}"
+    else:
+        netloc = callback_host
+
+    if parsed.hostname == callback_host:
+        return configured
+
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 @dataclass
