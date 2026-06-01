@@ -1441,7 +1441,7 @@ async def _stream_responses_via_websocket(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> AsyncIterator[str]:
     websocket_url = _to_websocket_upstream_url(url)
     request_started_at = time.monotonic()
@@ -2093,7 +2093,7 @@ async def stream_responses(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> AsyncIterator[str]:
     async with lease_http_session(session) as client_session:
         async for event_block in _stream_responses_with_session(
@@ -2125,7 +2125,7 @@ async def _stream_responses_with_session(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> AsyncIterator[str]:
     settings = get_settings()
     upstream_base = (base_url or settings.upstream_base_url).rstrip("/")
@@ -2744,7 +2744,7 @@ async def compact_responses(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> CompactResponsePayload:
     async with lease_http_session(session) as client_session:
         transport = _CompactCommandTransport(
@@ -3206,7 +3206,7 @@ async def thread_goal_request(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> dict[str, JsonValue]:
     settings = get_settings()
     upstream_base = (base_url or settings.upstream_base_url).rstrip("/")
@@ -3381,7 +3381,7 @@ async def codex_control_request(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> CodexControlResponse:
     settings = get_settings()
     upstream_base = (base_url or settings.upstream_base_url).rstrip("/")
@@ -3558,7 +3558,7 @@ async def transcribe_audio(
     route: ResolvedUpstreamRoute | None = None,
     codex_client: CodexClient | None = None,
     route_trace: UpstreamProxyRouteTrace | None = None,
-    allow_direct_egress: bool = False,
+    allow_direct_egress: bool = True,
 ) -> dict[str, JsonValue]:
     async with lease_http_session(session) as client_session:
         return await _transcribe_audio_with_session(
@@ -3764,6 +3764,21 @@ async def _transcribe_audio_with_session(
         ) from exc
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
         message = str(exc) or "Request to upstream timed out"
+        error_code = "upstream_unavailable"
+        error_message = message
+        raise ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", message),
+        ) from exc
+    except Exception as exc:
+        if route is None:
+            raise
+        message = _codex_route_transport_error_message(
+            route=route,
+            route_trace=route_trace,
+            operation="transcribe",
+            exc=exc,
+        )
         error_code = "upstream_unavailable"
         error_message = message
         raise ProxyResponseError(

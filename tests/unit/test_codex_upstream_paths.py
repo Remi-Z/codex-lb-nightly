@@ -9,6 +9,7 @@ import app.core.clients.proxy as proxy_module
 from app.core.clients.codex import CodexTransportError
 from app.core.clients.files import create_file, finalize_file
 from app.core.clients.proxy import (
+    ProxyResponseError,
     UpstreamProxyRouteTrace,
     codex_control_request,
     compact_responses,
@@ -31,6 +32,19 @@ class _CodexClient:
     async def request(self, method: str, url: str, *, route: ResolvedUpstreamRoute, **kwargs: Any) -> object:
         self.calls.append({"method": method, "url": url, "route": route, **kwargs})
         return self.response
+
+
+class _FailingRouteMetadataCodexClient:
+    async def request_with_route_metadata(
+        self,
+        method: str,
+        url: str,
+        *,
+        route: ResolvedUpstreamRoute,
+        **kwargs: Any,
+    ) -> object:
+        del method, url, route, kwargs
+        raise RuntimeError("proxy http://user:pass@proxy.test:8080 connect failed")
 
 
 class _Response:
@@ -258,6 +272,36 @@ async def test_transcribe_audio_uses_codex_client_when_route_is_resolved(route: 
     assert client.calls[0]["files"]["file"] == ("sample.wav", b"audio", "audio/wav")
     assert client.calls[0]["data"] == {"prompt": "say hello"}
     assert trace.endpoint_id == "ep_1"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_route_transport_errors_do_not_expose_proxy_credentials(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await transcribe_audio(
+            b"audio",
+            filename="sample.wav",
+            content_type="audio/wav",
+            prompt=None,
+            headers={"user-agent": "codex"},
+            access_token="access",
+            account_id="chatgpt_account",
+            session=cast(Any, object()),
+            route=route,
+            codex_client=cast(Any, _FailingRouteMetadataCodexClient()),
+        )
+
+    exc = exc_info.value
+    assert exc.status_code == 502
+    error = exc.payload["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == "upstream_unavailable"
+    message = str(error["message"])
+    assert "ep_1" in message
+    assert "RuntimeError" in message
+    assert "user:pass" not in message
+    assert "proxy.test:8080" not in message
 
 
 @pytest.mark.asyncio

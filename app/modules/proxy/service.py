@@ -2118,14 +2118,17 @@ class ProxyService:
                         route_pool_id = route.pool_id
                         route_endpoint_id = route.endpoint_id
                     route_trace = UpstreamProxyRouteTrace()
-                    compact_response = await core_compact_responses(
+                    compact_response = await _call_with_supported_optional_kwargs(
+                        core_compact_responses,
                         payload,
                         filtered,
                         access_token,
                         account_id,
-                        route=route,
-                        allow_direct_egress=route is None,
-                        route_trace=route_trace,
+                        optional_kwargs={
+                            "route": route,
+                            "allow_direct_egress": route is None,
+                            "route_trace": route_trace,
+                        },
                     )
                     if route_trace.endpoint_id is not None:
                         route_mode = route_trace.mode
@@ -3035,17 +3038,20 @@ class ProxyService:
                     total_timeout_seconds=remaining_budget,
                 )
                 try:
-                    result = await core_transcribe_audio(
+                    result = await _call_with_supported_optional_kwargs(
+                        core_transcribe_audio,
                         audio_bytes,
+                        optional_kwargs={
+                            "route": route,
+                            "allow_direct_egress": route is None,
+                            "route_trace": route_trace,
+                        },
                         filename=filename,
                         content_type=content_type,
                         prompt=prompt,
                         headers=filtered,
                         access_token=access_token,
                         account_id=account_id,
-                        route=route,
-                        allow_direct_egress=route is None,
-                        route_trace=route_trace,
                     )
                 finally:
                     pop_transcribe_timeout_overrides(timeout_tokens)
@@ -5118,12 +5124,14 @@ class ProxyService:
                     request_state=request_state,
                 )
                 return None
-            return account, await self._open_upstream_websocket_with_budget(
+            upstream = await _call_with_supported_optional_kwargs(
+                self._open_upstream_websocket_with_budget,
                 account,
                 headers,
+                optional_kwargs={"request_state": request_state},
                 timeout_seconds=remaining_budget,
-                request_state=request_state,
             )
+            return account, upstream
         except ProxyResponseError as exc:
             if _is_proxy_budget_exhausted_error(exc):
                 await self._emit_websocket_connect_timeout(
@@ -5352,12 +5360,15 @@ class ProxyService:
                         error_type="server_error",
                     ),
                 ) from exc
-            upstream = await connect_responses_websocket(
+            upstream = await _call_with_supported_optional_kwargs(
+                connect_responses_websocket,
                 headers,
                 access_token,
                 account_id,
-                route=route,
-                allow_direct_egress=route is None,
+                optional_kwargs={
+                    "route": route,
+                    "allow_direct_egress": route is None,
+                },
             )
             if request_state is not None:
                 _record_websocket_route_metadata(request_state, upstream=upstream, route=route)
@@ -6853,11 +6864,12 @@ class ProxyService:
                     timeout_seconds=_remaining_budget_seconds(deadline),
                 )
                 connect_headers = _headers_with_turn_state(headers, _sticky_key_from_turn_state_header(headers))
-                upstream = await self._open_upstream_websocket_with_budget(
+                upstream = await _call_with_supported_optional_kwargs(
+                    self._open_upstream_websocket_with_budget,
                     account,
                     connect_headers,
+                    optional_kwargs={"request_state": request_state},
                     timeout_seconds=_remaining_budget_seconds(deadline),
-                    request_state=request_state,
                 )
                 _record_same_account_takeover(
                     preferred_account_id=preferred_account_id,
@@ -11080,27 +11092,33 @@ class ProxyService:
             )
             response_create_lease = await self._get_work_admission().acquire_response_create()
             if upstream_stream_transport is not None:
-                stream = core_stream_responses(
+                stream = _call_stream_with_supported_optional_kwargs(
+                    core_stream_responses,
                     payload,
                     headers,
                     access_token,
                     account_id,
+                    optional_kwargs={
+                        "route": route,
+                        "allow_direct_egress": route is None,
+                        "route_trace": route_trace,
+                    },
                     raise_for_status=True,
                     upstream_stream_transport_override=upstream_stream_transport,
-                    route=route,
-                    allow_direct_egress=route is None,
-                    route_trace=route_trace,
                 )
             else:
-                stream = core_stream_responses(
+                stream = _call_stream_with_supported_optional_kwargs(
+                    core_stream_responses,
                     payload,
                     headers,
                     access_token,
                     account_id,
+                    optional_kwargs={
+                        "route": route,
+                        "allow_direct_egress": route is None,
+                        "route_trace": route_trace,
+                    },
                     raise_for_status=True,
-                    route=route,
-                    allow_direct_egress=route is None,
-                    route_trace=route_trace,
                 )
             iterator = stream.__aiter__()
             try:
@@ -14539,6 +14557,48 @@ def _routing_strategy(settings: DashboardSettings) -> RoutingStrategy:
     if value == "relative_availability":
         return "relative_availability"
     return "capacity_weighted"
+
+
+async def _call_with_supported_optional_kwargs(
+    func: Callable[..., Awaitable[Any]],
+    /,
+    *args: Any,
+    optional_kwargs: Mapping[str, Any],
+    **required_kwargs: Any,
+) -> Any:
+    return await func(*args, **_supported_optional_kwargs(func, optional_kwargs, required_kwargs))
+
+
+def _call_stream_with_supported_optional_kwargs(
+    func: Callable[..., AsyncIterator[str]],
+    /,
+    *args: Any,
+    optional_kwargs: Mapping[str, Any],
+    **required_kwargs: Any,
+) -> AsyncIterator[str]:
+    return func(*args, **_supported_optional_kwargs(func, optional_kwargs, required_kwargs))
+
+
+def _supported_optional_kwargs(
+    func: Callable[..., Any],
+    optional_kwargs: Mapping[str, Any],
+    required_kwargs: Mapping[str, Any],
+) -> dict[str, Any]:
+    kwargs = dict(required_kwargs)
+    kwargs.update(optional_kwargs)
+    if optional_kwargs:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            signature = None
+        accepts_var_keyword = signature is not None and any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+        )
+        if signature is not None and not accepts_var_keyword:
+            for name in optional_kwargs:
+                if name not in signature.parameters:
+                    kwargs.pop(name, None)
+    return kwargs
 
 
 def _relative_availability_power(settings: DashboardSettings) -> float:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from hashlib import sha256
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.refresh import RefreshError, TokenRefreshResult, refresh_access_token, should_refresh
@@ -253,10 +254,13 @@ class AuthManager:
                         False,
                         transport_error=True,
                     ) from exc
-            return await refresh_access_token(
+            return await _call_with_supported_optional_kwargs(
+                refresh_access_token,
                 refresh_token,
-                route=route,
-                allow_direct_egress=route is None,
+                optional_kwargs={
+                    "route": route,
+                    "allow_direct_egress": route is None,
+                },
             )
         finally:
             if refresh_lease is not None:
@@ -320,6 +324,29 @@ def _refresh_token_material_fingerprint(encryptor: TokenEncryptor, refresh_token
     except Exception:
         material = refresh_token_encrypted
     return sha256(material).hexdigest()
+
+
+async def _call_with_supported_optional_kwargs(
+    func: Callable[..., Awaitable[Any]],
+    /,
+    *args: Any,
+    optional_kwargs: Mapping[str, Any],
+    **required_kwargs: Any,
+) -> Any:
+    kwargs = dict(required_kwargs)
+    kwargs.update(optional_kwargs)
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        signature = None
+    accepts_var_keyword = signature is not None and any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+    )
+    if signature is not None and not accepts_var_keyword:
+        for name in optional_kwargs:
+            if name not in signature.parameters:
+                kwargs.pop(name, None)
+    return await func(*args, **kwargs)
 
 
 def _clear_refresh_singleflight_state() -> None:
