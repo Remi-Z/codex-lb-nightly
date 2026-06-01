@@ -259,6 +259,15 @@ class StreamingLimitWarmupSender:
             ).ensure_fresh(account)
 
     async def _resolve_upstream_route(self, account: Account) -> ResolvedUpstreamRoute | None:
+        if self._accounts_repo_factory is not None:
+            async with self._accounts_repo_factory() as accounts_repo:
+                return await resolve_upstream_route(
+                    accounts_repo.session,
+                    account_id=account.id,
+                    operation="limit_warmup",
+                    scope="account",
+                    encryptor=self._encryptor,
+                )
         return await resolve_upstream_route(
             self._accounts_repo.session,
             account_id=account.id,

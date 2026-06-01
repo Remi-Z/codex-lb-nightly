@@ -287,7 +287,19 @@ class CoordinatedSender:
 
 
 class _WarmupAccountsRepo:
-    session = object()
+    def __init__(self, session: object | None = None) -> None:
+        self.session = session or object()
+
+
+class _WarmupAccountsRepoContext:
+    def __init__(self, repo: _WarmupAccountsRepo) -> None:
+        self.repo = repo
+
+    async def __aenter__(self) -> _WarmupAccountsRepo:
+        return self.repo
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
 
 
 @pytest.mark.asyncio
@@ -324,6 +336,52 @@ async def test_streaming_limit_warmup_sender_passes_resolved_route(monkeypatch: 
     assert calls["resolve_kwargs"]["operation"] == "limit_warmup"
     assert calls["stream_kwargs"]["route"] is route
     assert calls["stream_kwargs"]["route_trace"].endpoint_id is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_limit_warmup_sender_resolves_route_with_owned_repo_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _account()
+    primary_session = object()
+    owned_session = object()
+    route = ResolvedUpstreamRoute(
+        mode="account_bound",
+        pool_id="pool_1",
+        endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080),
+    )
+    calls: dict[str, Any] = {"factory": 0}
+
+    def repo_factory() -> _WarmupAccountsRepoContext:
+        calls["factory"] += 1
+        return _WarmupAccountsRepoContext(_WarmupAccountsRepo(owned_session))
+
+    sender = StreamingLimitWarmupSender(
+        cast(Any, _WarmupAccountsRepo(primary_session)),
+        accounts_repo_factory=cast(Any, repo_factory),
+    )
+
+    async def ensure_fresh(target: Account) -> Account:
+        return target
+
+    async def resolve_route(session: object, *args: object, **kwargs: object) -> ResolvedUpstreamRoute:
+        calls["route_session"] = session
+        return route
+
+    async def stream(*args: object, **kwargs: object):
+        yield 'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
+
+    monkeypatch.setattr(sender, "_ensure_fresh", ensure_fresh)
+    monkeypatch.setattr(sender._encryptor, "decrypt", lambda value: "access")
+    monkeypatch.setattr(limit_warmup_service, "resolve_upstream_route", resolve_route)
+    monkeypatch.setattr(limit_warmup_service, "stream_responses", stream)
+
+    result = await sender.send(account, model="gpt-5.2", prompt="Say OK.")
+
+    assert result.success is True
+    assert calls["factory"] == 1
+    assert calls["route_session"] is owned_session
+    assert calls["route_session"] is not primary_session
 
 
 @pytest.mark.asyncio

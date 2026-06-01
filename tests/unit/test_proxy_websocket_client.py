@@ -54,6 +54,7 @@ class _FakeConnection:
 class _FakeCodexWebSocket:
     def __init__(self) -> None:
         self.closed = False
+        self.response = SimpleNamespace(headers={"x-codex-turn-state": "turn-routed"})
 
     async def send_str(self, data: str) -> None:
         del data
@@ -207,6 +208,7 @@ async def test_connect_responses_websocket_routed_codex_call_preserves_size_limi
     assert call["timeout"] == 7.0
     assert call["max_message_size"] == 4321
     assert "max_size" not in call
+    assert websocket.response_header("x-codex-turn-state") == "turn-routed"
 
 
 @pytest.mark.asyncio
