@@ -62,8 +62,8 @@ one of: `ok`, `proxy_connect`, `proxy_auth`, `tls`, `upstream_status`,
   `error.reason` equal to the probe classification
 
 #### Scenario: Import with proxy validates before account activation
-- **WHEN** an operator imports an `auth.json` file together with a proxy
-  configuration
+- **WHEN** an operator imports an `auth.json` file and submits proxy settings
+  in the same request payload (outside of the `auth.json` JSON document)
 - **THEN** the service MUST perform the end-to-end proxy probe before
   inserting or updating the account row
 - **AND** a probe failure MUST return 422 with `error.code=proxy_probe_failed`
@@ -331,18 +331,30 @@ the proxy failure counter.
   `account_proxy_failure_window_seconds` window
 - **THEN** they MUST NOT count toward the current threshold
 
-### Requirement: Auth.json import/export does not carry proxy configuration
+### Requirement: Auth.json payload does not carry proxy configuration
 
-The `auth.json` import and export endpoints MUST NOT read or write the
-account proxy configuration. The proxy configuration is operator-managed
-through the dedicated `POST /api/accounts/{id}/proxy` and
-`DELETE /api/accounts/{id}/proxy` endpoints only.
+The `auth.json` payload MUST be limited to OpenCode-compatible account
+credentials and MUST NOT carry proxy fields or proxy credentials. Import
+proxy behavior is a separate request-level concern.
 
-#### Scenario: Import of an auth.json does not modify proxy state
+The import endpoint MAY accept proxy fields as request-level form fields in
+the same multipart call as `POST /api/accounts/import`; those are applied via
+the account egress persistence path, while the `auth.json` JSON content itself
+is ignored for proxy state.
+
+#### Scenario: Import without proxy form does not modify proxy state
 - **WHEN** an operator imports an `auth.json` for an account
+- **AND** the multipart request carries no proxy form fields
 - **THEN** any existing proxy configuration on that account is preserved
   unchanged
 - **AND** no proxy fields are read from the `auth.json` payload
+
+#### Scenario: Import with proxy form applies proxy atomically with account insert
+- **WHEN** an operator imports an `auth.json` and submits explicit proxy form
+  fields in the request
+- **THEN** the service probes the provided proxy before persisting the account
+- **AND** persists the account and proxy atomically on probe success
+- **AND** the proxy state update does not come from the `auth.json` payload
 
 #### Scenario: Export of an account does not include proxy state
 - **WHEN** an operator exports an account

@@ -559,7 +559,7 @@ async def test_set_proxy_preserves_non_blank_password_whitespace(async_client, m
 
 
 @pytest.mark.asyncio
-async def test_set_proxy_does_not_reuse_password_for_different_proxy(async_client, monkeypatch):
+async def test_set_proxy_reuses_password_for_different_proxy_when_password_is_omitted(async_client, monkeypatch):
     account_id = await _import_account(async_client)
     captured: dict = {}
     monkeypatch.setattr(
@@ -578,6 +578,7 @@ async def test_set_proxy_does_not_reuse_password_for_different_proxy(async_clien
     assert response.status_code == 200, response.text
 
     captured.clear()
+    expected_password = _proxy_auth_fixture()
     response = await async_client.post(
         f"/api/accounts/{account_id}/proxy",
         json={
@@ -588,8 +589,8 @@ async def test_set_proxy_does_not_reuse_password_for_different_proxy(async_clien
     )
     assert response.status_code == 200, response.text
     assert response.json()["host"] == "proxy-b.example.com"
-    assert response.json()["hasPassword"] is False
-    assert captured["password"] is None
+    assert response.json()["hasPassword"] is True
+    assert captured["password"] == expected_password
 
 
 @pytest.mark.asyncio

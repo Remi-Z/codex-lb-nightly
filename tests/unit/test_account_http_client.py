@@ -644,3 +644,10 @@ def test_protocol_runtime_check_optional() -> None:
     set_proxy_config_provider(None)
 
     assert ProxyConfigProvider is not None  # imported for type narrowing in callers
+
+
+def test_redact_proxy_uri_removes_userinfo() -> None:
+    assert (
+        account_http_module._redact_proxy_uri("socks5h://proxy-user:proxy-secret@proxy.example.com:1080")
+        == "socks5h://proxy.example.com:1080"
+    )

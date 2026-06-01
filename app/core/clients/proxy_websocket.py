@@ -23,6 +23,7 @@ from websockets.exceptions import (
 from websockets.typing import Origin
 
 from app.core.clients.account_http import (
+    _redact_proxy_uri,
     get_account_websocket_proxy_uri,
 )
 from app.core.clients.account_proxy_failures import record_proxy_errors_for_account
@@ -279,6 +280,15 @@ def _responses_websocket_url(base_url: str) -> str:
     return urlunparse(parsed._replace(scheme=scheme))
 
 
+def _sanitize_proxy_error_message(message: str, *, proxy_uri: str | None) -> str:
+    if not message or proxy_uri is None:
+        return message
+    redacted_proxy_uri = _redact_proxy_uri(proxy_uri)
+    if redacted_proxy_uri == proxy_uri:
+        return message
+    return message.replace(proxy_uri, redacted_proxy_uri)
+
+
 @asynccontextmanager
 async def _maybe_record_websocket_proxy_errors(
     account_id: str | None,
@@ -356,23 +366,41 @@ async def connect_responses_websocket(
     except asyncio.TimeoutError as exc:
         raise ProxyResponseError(
             502,
-            openai_error("upstream_unavailable", "Request to upstream timed out"),
+            openai_error(
+                "upstream_unavailable",
+                _sanitize_proxy_error_message("Request to upstream timed out", proxy_uri=account_proxy_uri),
+            ),
         ) from exc
     except InvalidStatus as exc:
         response = exc.response
-        message = response.reason_phrase or f"Upstream websocket error: HTTP {response.status_code}"
+        message = _sanitize_proxy_error_message(
+            response.reason_phrase or f"Upstream websocket error: HTTP {response.status_code}",
+            proxy_uri=account_proxy_uri,
+        )
         raise ProxyResponseError(
             response.status_code,
             _handshake_error_payload(response.status_code, message, response.headers, response.body),
         ) from exc
     except InvalidHandshake as exc:
-        message = str(exc) or "Invalid upstream websocket handshake"
+        message = (
+            _sanitize_proxy_error_message(
+                str(exc),
+                proxy_uri=account_proxy_uri,
+            )
+            or "Invalid upstream websocket handshake"
+        )
         raise ProxyResponseError(
             502,
             openai_error("upstream_unavailable", message, error_type="server_error"),
         ) from exc
     except InvalidProxy as exc:
-        message = str(exc) or "Invalid upstream websocket proxy configuration"
+        message = (
+            _sanitize_proxy_error_message(
+                str(exc),
+                proxy_uri=account_proxy_uri,
+            )
+            or "Invalid upstream websocket proxy configuration"
+        )
         raise ProxyResponseError(
             502,
             openai_error("upstream_unavailable", message, error_type="server_error"),
@@ -380,7 +408,10 @@ async def connect_responses_websocket(
     except OSError as exc:
         raise ProxyResponseError(
             502,
-            openai_error("upstream_unavailable", str(exc)),
+            openai_error(
+                "upstream_unavailable",
+                _sanitize_proxy_error_message(str(exc), proxy_uri=account_proxy_uri),
+            ),
         ) from exc
 
     return ArchivingResponsesWebSocket(

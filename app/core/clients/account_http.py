@@ -36,6 +36,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Protocol
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 from aiohttp_retry import RetryClient
@@ -149,6 +150,16 @@ _proxy_config_provider: ProxyConfigProvider | None = None
 _UNSET_WS_URI: object = object()
 _account_websocket_proxy_uri_cache: dict[str, str | None] = {}
 _account_websocket_proxy_uri_lock = asyncio.Lock()
+
+
+def _redact_proxy_uri(proxy_uri: str) -> str:
+    """Remove userinfo from a proxy URI before logging or surfacing in errors."""
+
+    parsed = urlparse(proxy_uri)
+    if "@" not in parsed.netloc:
+        return proxy_uri
+    _, host_port = parsed.netloc.rsplit("@", 1)
+    return urlunparse((parsed.scheme, host_port, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
 
 class AccountHttpClientLease:

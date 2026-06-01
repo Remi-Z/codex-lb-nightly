@@ -402,6 +402,45 @@ async def test_connect_responses_websocket_maps_invalid_status(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_responses_websocket_redacts_proxy_credentials_from_error(monkeypatch):
+    proxy_uri = "socks5h://proxy-user:proxy-secret@proxy.example.com:1080"
+
+    async def fake_websocket_connect(url: str, **kwargs):
+        del url, kwargs
+        raise InvalidProxy(proxy_uri, "proxy auth failed")
+
+    async def fake_proxy_uri(account_id: str) -> str | None:
+        assert account_id == "account-123"
+        return proxy_uri
+
+    monkeypatch.setattr(proxy_websocket_module, "websocket_connect", fake_websocket_connect, raising=False)
+    monkeypatch.setattr(proxy_websocket_module, "get_account_websocket_proxy_uri", fake_proxy_uri)
+    monkeypatch.setattr(
+        proxy_websocket_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            upstream_base_url="https://chatgpt.com/backend-api",
+            upstream_connect_timeout_seconds=7.0,
+            max_sse_event_bytes=4321,
+            upstream_websocket_trust_env=False,
+        ),
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await connect_responses_websocket(
+            {"openai-beta": "responses_websockets=2026-02-06"},
+            "access-token",
+            "account-123",
+        )
+
+    error_message = _proxy_error_message(exc_info.value)
+    assert error_message is not None
+    assert "proxy-secret" not in error_message
+    assert "proxy-user:" not in error_message
+    assert "proxy.example.com:1080" in error_message
+
+
+@pytest.mark.asyncio
 async def test_connect_responses_websocket_can_opt_in_to_env_proxy(monkeypatch):
     fake_connection = _FakeConnection()
     seen: dict[str, object] = {}

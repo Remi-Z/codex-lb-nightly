@@ -488,9 +488,8 @@ class AccountsService:
         the database; any other outcome raises :class:`ProxyProbeError`.
 
         Password handling: omitted ``payload.password`` reuses the
-        existing password only when the host / port / username identity
-        is unchanged. Explicit ``password: null`` or ``clear_password``
-        clears the stored secret.
+        existing password by default. Explicit ``password: null`` or
+        ``clear_password`` clears the stored secret.
         """
 
         account = await self._repo.get_by_id(account_id)
@@ -501,17 +500,11 @@ class AccountsService:
 
         password_field_was_sent = "password" in payload.model_fields_set
         clear_password = payload.clear_password or (password_field_was_sent and payload.password is None)
-        same_proxy_identity = (
-            existing is not None
-            and existing.host == payload.host
-            and existing.port == payload.port
-            and existing.username == payload.username
-        )
         if clear_password:
             password_plain = None
         elif payload.password is not None:
             password_plain: str | None = payload.password
-        elif existing is not None and existing.password_encrypted is not None and same_proxy_identity:
+        elif existing is not None and existing.password_encrypted is not None:
             try:
                 password_plain = self._encryptor.decrypt(existing.password_encrypted)
             except InvalidToken as exc:
