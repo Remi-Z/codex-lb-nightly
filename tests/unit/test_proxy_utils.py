@@ -16618,8 +16618,9 @@ async def test_thread_goal_refresh_connection_reset_fails_over(monkeypatch):
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         assert account_id == account_b.chatgpt_account_id
         return {"goal": {"id": "goal-ok"}}
 
@@ -16673,8 +16674,9 @@ async def test_thread_goal_refresh_transport_error_fails_over(monkeypatch):
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         assert account_id == account_b.chatgpt_account_id
         return {"goal": {"id": "goal-ok"}}
 
@@ -16715,8 +16717,9 @@ async def test_thread_goal_upstream_connection_reset_fails_over_after_freshness(
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         upstream_accounts.append(account_id)
         if account_id == account_a.chatgpt_account_id:
             raise proxy_module.ProxyResponseError(
@@ -16775,8 +16778,9 @@ async def test_thread_goal_failover_401_force_refreshes_fallback_account(monkeyp
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, account_id, method, timeout_seconds
+        del operation, payload, headers, account_id, method, timeout_seconds, kwargs
         upstream_tokens.append(access_token)
         if access_token == "access-token":
             if len(upstream_tokens) == 1:
@@ -16830,8 +16834,9 @@ async def test_thread_goal_body_read_connection_reset_does_not_fail_over(monkeyp
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         upstream_accounts.append(account_id)
         raise proxy_module.ProxyResponseError(
             502,
@@ -16878,8 +16883,9 @@ async def test_thread_goal_failover_call_error_records_fallback_account(monkeypa
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         upstream_accounts.append(account_id)
         if account_id == account_a.chatgpt_account_id:
             raise proxy_module.ProxyResponseError(
@@ -16939,8 +16945,9 @@ async def test_thread_goal_failover_freshness_connection_reset_marks_failover_ac
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         upstream_accounts.append(account_id)
         raise proxy_module.ProxyResponseError(
             502,
@@ -16998,8 +17005,9 @@ async def test_thread_goal_failover_refresh_transport_error_marks_failover_accou
         *,
         method: str,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del operation, payload, headers, access_token, method, timeout_seconds
+        del operation, payload, headers, access_token, method, timeout_seconds, kwargs
         upstream_accounts.append(account_id)
         raise proxy_module.ProxyResponseError(
             502,
@@ -17169,8 +17177,9 @@ async def test_codex_control_refresh_connection_reset_fails_over(monkeypatch):
         access_token: str,
         account_id: str | None,
         timeout_seconds: float,
+        **kwargs: object,
     ) -> proxy_module.CodexControlResponse:
-        del path, method, payload, query_params, headers, access_token, timeout_seconds
+        del path, method, payload, query_params, headers, access_token, timeout_seconds, kwargs
         assert account_id == account_b.chatgpt_account_id
         return proxy_module.CodexControlResponse(status_code=200, body=b"ok", headers={})
 
@@ -17270,8 +17279,9 @@ async def test_files_create_refresh_connection_reset_fails_over(monkeypatch):
         headers: Mapping[str, str],
         access_token: str,
         account_id: str | None,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del payload, headers, access_token
+        del payload, headers, access_token, kwargs
         assert account_id == account_b.chatgpt_account_id
         return {"file_id": "file_ok"}
 
@@ -17309,8 +17319,9 @@ async def test_files_create_body_read_connection_reset_does_not_fail_over(monkey
         headers: Mapping[str, str],
         access_token: str,
         account_id: str | None,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
-        del payload, headers, access_token
+        del payload, headers, access_token, kwargs
         upstream_accounts.append(account_id)
         raise proxy_module.ProxyResponseError(
             502,
