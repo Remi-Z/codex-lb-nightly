@@ -274,7 +274,7 @@ class ApiKeysRepository:
         elif limit_type == LimitType.OUTPUT_TOKENS:
             value_expr = output_expr
         elif limit_type == LimitType.COST_USD:
-            value_expr = func.round(func.coalesce(RequestLog.cost_usd, 0.0) * 1_000_000)
+            value_expr = cast(func.coalesce(RequestLog.cost_usd, 0.0) * 1_000_000, Integer)
         else:
             return 0
 
