@@ -300,4 +300,4 @@ class TestHistoricalLimitUsage:
         assert result == 1_250_000
         assert len(statements) == 1
         assert "cost_usd" in statements[0]
-        assert "CAST(coalesce(request_logs.cost_usd" in statements[0]
+        assert "floor(coalesce(request_logs.cost_usd" in statements[0]
