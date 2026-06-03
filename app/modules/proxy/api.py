@@ -3336,6 +3336,14 @@ async def _normalize_public_responses_stream(
                     yield formatted_payload
                 return
 
+        if enforce_openai_sdk_contract and event_type == "error":
+            for formatted_payload in _public_response_failed_event_blocks_from_error(
+                normalized_payload,
+                include_created=not created_emitted,
+            ):
+                yield formatted_payload
+            return
+
         _collect_output_item_event(normalized_payload, output_items)
         if event_type == "response.output_text.delta":
             seen_text_delta_keys.add(_text_delta_stream_key(normalized_payload))
@@ -3389,12 +3397,22 @@ def _public_response_failed_event_blocks_from_error(
     if error is None:
         error = _default_error_envelope().error
     assert error is not None
+    message = error.message
+    raw_message = payload.get("message")
+    if isinstance(raw_message, str) and raw_message.strip():
+        if not message or message == "Upstream error":
+            message = raw_message.strip()
+    error_type = error.type
+    if not error_type:
+        raw_error_type = payload.get("error_type")
+        if isinstance(raw_error_type, str) and raw_error_type.strip():
+            error_type = raw_error_type.strip()
     failed_payload = cast(
         dict[str, JsonValue],
         response_failed_event(
             error.code or "upstream_error",
-            error.message or "Upstream error",
-            error.type or "server_error",
+            message or "Upstream error",
+            error_type or "server_error",
             response_id=f"resp_{error.code or 'upstream_error'}",
             error_param=error.param,
         ),

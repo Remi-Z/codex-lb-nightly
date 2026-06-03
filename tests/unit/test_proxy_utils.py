@@ -3411,6 +3411,35 @@ async def test_stream_responses_websocket_normalizes_typeless_error_code_to_upst
     assert failed_error["message"] == "generic upstream failure"
 
 
+@pytest.mark.asyncio
+async def test_public_responses_stream_normalizes_raw_error_after_created():
+    async def raw_stream() -> AsyncIterator[str]:
+        yield 'data: {"type":"response.created","response":{"id":"resp_public_error"}}\n\n'
+        yield (
+            'data: {"type":"error","sequence_number":"error","error_type":"server_error",'
+            '"message":"OpenCode stream failed"}\n\n'
+        )
+
+    events = [
+        parse_sse_data_json(event_block)
+        async for event_block in proxy_api._normalize_public_responses_stream(
+            raw_stream(),
+            enforce_openai_sdk_contract=True,
+        )
+    ]
+
+    assert len(events) == 2
+    assert events[0] is not None
+    assert events[0]["type"] == "response.created"
+    assert events[1] is not None
+    assert events[1]["type"] == "response.failed"
+    response = cast(dict[str, JsonValue], events[1]["response"])
+    error = cast(dict[str, JsonValue], response["error"])
+    assert error["code"] == "upstream_error"
+    assert error["type"] == "server_error"
+    assert error["message"] == "OpenCode stream failed"
+
+
 def test_normalize_http_bridge_error_event_preserves_explicit_error_code_from_parsed_event():
     event = parse_sse_event(
         'data: {"type":"error","error":{"code":"error","type":"server_error","message":"explicit"}}\n\n'
