@@ -582,7 +582,7 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     runs_payload = runs_response.json()["items"]
     assert len(runs_payload) == 2
     statuses = {entry["status"] for entry in runs_payload}
-    assert statuses == {"failed", "success"}
+    assert statuses == {"partial", "success"}
 
     grouped_response = await async_client.get(
         "/api/automations/runs",
@@ -594,8 +594,8 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     grouped_item = grouped_payload["items"][0]
     assert grouped_item["effectiveStatus"] == "partial"
     assert grouped_item["totalAccounts"] == 2
-    assert grouped_item["completedAccounts"] == 2
-    assert grouped_item["pendingAccounts"] == 0
+    assert grouped_item["completedAccounts"] == 1
+    assert grouped_item["pendingAccounts"] == 1
 
     grouped_partial_response = await async_client.get(
         "/api/automations/runs",
@@ -629,8 +629,8 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     filtered_grouped_item = grouped_partial_for_account_payload["items"][0]
     assert filtered_grouped_item["effectiveStatus"] == "partial"
     assert filtered_grouped_item["totalAccounts"] == 2
-    assert filtered_grouped_item["completedAccounts"] == 2
-    assert filtered_grouped_item["pendingAccounts"] == 0
+    assert filtered_grouped_item["completedAccounts"] == 1
+    assert filtered_grouped_item["pendingAccounts"] == 1
 
     grouped_success_response = await async_client.get(
         "/api/automations/runs",
@@ -656,9 +656,9 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     )
     assert options_with_status_response.status_code == 200
     options_with_status_payload = options_with_status_response.json()
-    assert accounts[0].id in options_with_status_payload["accountIds"]
-    assert accounts[1].id in options_with_status_payload["accountIds"]
-    assert len(call_order) == 2
+    assert options_with_status_payload["accountIds"] == [accounts[1].id]
+    assert call_order[:2] == [f"chatgpt-{accounts[0].id}", f"chatgpt-{accounts[1].id}"]
+    assert len(call_order) == 3
     assert set(call_order) == {f"chatgpt-{accounts[0].id}", f"chatgpt-{accounts[1].id}"}
 
 

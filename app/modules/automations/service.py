@@ -964,10 +964,7 @@ class AutomationsService:
         last_error_message: str | None = "No available accounts configured for automation job"
         last_attempted_account_id: str | None = forced_account_id
         cached_accounts_by_id: dict[str, Account] | None = None
-        if forced_account_id is not None:
-            account_ids_to_try = [forced_account_id]
-        else:
-            account_ids_to_try = list(job.account_ids)
+        account_ids_to_try = _prioritize_forced_account(job.account_ids, forced_account_id)
         if not account_ids_to_try:
             accounts = await self._accounts_repository.list_accounts()
             account_ids_to_try = [
@@ -979,6 +976,7 @@ class AutomationsService:
                 )
             ]
             cached_accounts_by_id = {account.id: account for account in accounts}
+            account_ids_to_try = _prioritize_forced_account(account_ids_to_try, forced_account_id)
 
         for account_id in account_ids_to_try:
             request_started_at: float | None = None
@@ -1052,7 +1050,7 @@ class AutomationsService:
                 had_prior_failures = True
                 last_error_code = exc.code or "authentication_error"
                 last_error_message = exc.message
-                if forced_account_id is None and self._is_retryable_account_failure(last_error_code):
+                if self._is_retryable_account_failure(last_error_code):
                     continue
                 break
             except ProxyResponseError as exc:
@@ -1070,7 +1068,7 @@ class AutomationsService:
                     error_code=error_code,
                     error_message=error_message,
                 )
-                if forced_account_id is None and self._is_retryable_account_failure(error_code):
+                if self._is_retryable_account_failure(error_code):
                     continue
                 break
             except Exception as exc:
@@ -1972,6 +1970,12 @@ def _normalize_reasoning_effort(value: str | None, *, model_slug: str) -> str | 
             code="invalid_reasoning_effort",
         )
     return normalized
+
+
+def _prioritize_forced_account(account_ids: list[str], forced_account_id: str | None) -> list[str]:
+    if forced_account_id is None:
+        return list(account_ids)
+    return [forced_account_id, *(account_id for account_id in account_ids if account_id != forced_account_id)]
 
 
 def _build_dispatch_plan(
