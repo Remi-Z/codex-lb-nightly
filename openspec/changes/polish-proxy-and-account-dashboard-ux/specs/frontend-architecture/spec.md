@@ -104,3 +104,36 @@ search input.
 - **WHEN** an operator views the account list
 - **THEN** the search input occupies the full width of the controls row
 - **AND** the account status filter control is rendered on the same row as the "Need help?" toggle
+
+### Requirement: Account alias is edited inline from the detail header
+
+The account detail header SHALL display the account's local label (the alias when set, otherwise the
+display name or email) next to an edit (pencil) control, and SHALL NOT render a separate always-visible
+alias form. Activating the edit control SHALL replace the label with an inline text input pre-filled
+with the current alias plus confirm and cancel controls. Confirming SHALL persist the alias via the
+existing alias handler (an empty value clears the alias) and return to the display state; cancelling
+SHALL discard the edit without a network call. When an alias is set, the header SHALL still surface the
+account email as a subtitle so the underlying account remains identifiable.
+
+#### Scenario: Pencil reveals the inline alias editor
+
+- **WHEN** an operator views the account detail header
+- **THEN** the account local label is shown next to an "Edit alias" control
+- **AND** no separate "Account alias" form card is rendered
+- **WHEN** the operator activates the "Edit alias" control
+- **THEN** the label is replaced by a text input pre-filled with the current alias, with save and cancel controls
+
+#### Scenario: Saving and clearing the alias inline
+
+- **GIVEN** the inline alias editor is open
+- **WHEN** the operator enters a label and confirms
+- **THEN** the alias is persisted via the existing alias handler and the header returns to the display state
+- **WHEN** the operator clears the input and confirms
+- **THEN** the alias is cleared via the existing alias handler
+
+#### Scenario: Cancelling discards the edit
+
+- **GIVEN** the inline alias editor is open with unsaved changes
+- **WHEN** the operator cancels
+- **THEN** the editor closes without calling the alias handler
+- **AND** the displayed label is unchanged

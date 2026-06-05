@@ -29,9 +29,17 @@
 - [x] 5.3 Add `add-account-dialog.tsx` chooser (two option cards: add via OAuth, import `auth.json`) that closes itself and opens the existing OAuth / import dialog via the existing `onOpenImport` / `onOpenOauth` callbacks
 - [x] 5.4 Defer the follow-on dialog open by one animation frame so the chooser→dialog handoff does not leave Radix `pointer-events: none` stuck on `<body>`
 
-## 6. Tests and verification
+## 6. Account alias inline editing
 
-- [x] 6.1 Rewrote `upstream-proxy-settings.test.tsx` for the dialog flow (open trigger → fill → submit), added hidden-fields-on-initial-render, listing, and empty-state tests
-- [x] 6.2 Sizing contract covered by existing role/aria-based `account-actions` / `account-proxy-binding` tests (no `w-44`; accessible names preserved); `account-list` tests cover the chooser + filter placement
-- [x] 6.3 `bun run lint`, `bun run typecheck`, `bun run test` (518 passed), and `bun run build` all clean
-- [x] 6.4 `openspec validate --strict polish-proxy-and-account-dashboard-ux` → valid
+- [x] 6.1 Replace the `AccountAliasForm` card with an inline `AccountNameField` in the detail header: the `<h2>` shows the local label (`alias || displayName || email`) next to a ghost `Pencil` button (`aria-label="Edit alias"`)
+- [x] 6.2 Edit mode swaps the name for an `Input` (`aria-label="Account alias"`, autofocus, `maxLength` 255) with ghost `Check`/`X` buttons; Enter saves, Escape cancels, empty input clears, Save disabled while `busy`; saves via the existing `onSetAlias`
+- [x] 6.3 Show the email as the muted subtitle whenever an alias is set (preserve privacy-blur + `showAccountId` ID suffix); do not blur the alias label; keep the helper text "Use a local label to distinguish accounts that share the same email."
+- [x] 6.4 Delete the now-unused `account-alias-form.tsx`
+
+## 7. Tests and verification
+
+- [x] 7.1 Rewrote `upstream-proxy-settings.test.tsx` for the dialog flow (open trigger → fill → submit), added hidden-fields-on-initial-render, listing, and empty-state tests
+- [x] 7.2 Sizing contract covered by existing role/aria-based `account-actions` / `account-proxy-binding` tests (no `w-44`; accessible names preserved); `account-list` tests cover the chooser + filter placement
+- [x] 7.3 Updated the `accounts-flow.test.tsx` alias flow for the inline editor (Edit alias → type → Save alias → re-edit → clear) with equivalent assertions
+- [x] 7.4 `bun run lint`, `bun run typecheck`, `bun run test` (518 passed), and `bun run build` all clean
+- [x] 7.5 `openspec validate --strict polish-proxy-and-account-dashboard-ux` → valid
