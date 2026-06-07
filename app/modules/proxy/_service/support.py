@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections import deque
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -31,6 +32,38 @@ _REQUEST_TRANSPORT_WEBSOCKET = "websocket"
 _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS = 20
 _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS = 0.05
 _HARD_HTTP_BRIDGE_AFFINITY_KINDS = frozenset({"turn_state_header", "session_header"})
+
+
+async def _call_with_supported_optional_kwargs(
+    func: Callable[..., Awaitable[Any]],
+    /,
+    *args: Any,
+    optional_kwargs: Mapping[str, Any],
+    **required_kwargs: Any,
+) -> Any:
+    return await func(*args, **_supported_optional_kwargs(func, optional_kwargs, required_kwargs))
+
+
+def _supported_optional_kwargs(
+    func: Callable[..., Any],
+    optional_kwargs: Mapping[str, Any],
+    required_kwargs: Mapping[str, Any],
+) -> dict[str, Any]:
+    kwargs = dict(required_kwargs)
+    kwargs.update(optional_kwargs)
+    if optional_kwargs:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            signature = None
+        accepts_var_keyword = signature is not None and any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+        )
+        if signature is not None and not accepts_var_keyword:
+            for name in optional_kwargs:
+                if name not in signature.parameters:
+                    kwargs.pop(name, None)
+    return kwargs
 
 
 def _request_log_useragent_fields(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
