@@ -1000,6 +1000,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 account_id=account_id_value,
                 api_key=api_key,
                 request_id=response_id,
+                archive_request_id=request_id,
                 model=model,
                 latency_ms=int((time.monotonic() - start) * 1000),
                 status=status,

@@ -102,6 +102,7 @@ describe("RecentRequestsTable", () => {
             apiKeyName: "Key Alpha",
             apiKeyId: "key-alpha",
             requestId: "req-1",
+            archiveRequestId: "archive-req-1",
             requestKind: "normal",
             model: "gpt-5.1",
             source: null,
@@ -145,7 +146,7 @@ describe("RecentRequestsTable", () => {
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("Request Details")).toBeInTheDocument();
     expect(within(dialog).getByText("req-1")).toBeInTheDocument();
-    expect(within(dialog).getByTestId("request-archive-panel")).toHaveTextContent("Archive for req-1");
+    expect(within(dialog).getByTestId("request-archive-panel")).toHaveTextContent("Archive for archive-req-1");
     expect(within(dialog).getByText("rate_limit_exceeded")).toBeInTheDocument();
     expect(dialog.textContent).toContain("Rate limit reached while processing this request");
 

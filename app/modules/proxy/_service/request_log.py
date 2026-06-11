@@ -109,12 +109,14 @@ class _RequestLogMixin:
         upstream_proxy_fail_closed_reason: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        archive_request_id: str | None = None,
     ) -> None:
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,
                 api_key_id=api_key.id if api_key else None,
                 request_id=request_id,
+                archive_request_id=archive_request_id,
                 model=model,
                 latency_ms=latency_ms,
                 status=status,
@@ -190,6 +192,7 @@ class _RequestLogMixin:
         account_id: str | None,
         api_key_id: str | None,
         request_id: str,
+        archive_request_id: str | None,
         model: str | None,
         latency_ms: int,
         status: str,
@@ -229,6 +232,7 @@ class _RequestLogMixin:
                     api_key_id=api_key_id,
                     session_id=_normalize_session_id(session_id),
                     request_id=request_id,
+                    archive_request_id=archive_request_id,
                     model=model or "",
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,

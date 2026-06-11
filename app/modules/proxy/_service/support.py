@@ -144,6 +144,7 @@ class _WebSocketRequestState:
     started_at: float
     latency_first_token_ms: int | None = None
     request_log_id: str | None = None
+    archive_request_id: str | None = None
     requested_service_tier: str | None = None
     actual_service_tier: str | None = None
     response_id: str | None = None

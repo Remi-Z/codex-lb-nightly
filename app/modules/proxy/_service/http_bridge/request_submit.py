@@ -248,9 +248,11 @@ class _HTTPBridgeRequestSubmitMixin:
             if input_item_count > 0:
                 input_full_fingerprint = _fingerprint_input_items(payload_input_list)
 
+        resolved_request_id = request_id or f"ws_{uuid4().hex}"
         request_state = _WebSocketRequestState(
-            request_id=request_id or f"ws_{uuid4().hex}",
+            request_id=resolved_request_id,
             request_log_id=request_log_id,
+            archive_request_id=get_request_id() or resolved_request_id,
             model=payload.model,
             service_tier=forwarded_service_tier,
             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,

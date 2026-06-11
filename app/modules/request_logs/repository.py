@@ -250,9 +250,11 @@ class RequestLogsRepository:
         upstream_proxy_endpoint_id: str | None = None,
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
+        archive_request_id: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
+            resolved_archive_request_id = (archive_request_id or "").strip() or resolved_request_id
             resolved_plan_type = plan_type
             if resolved_plan_type is None and account_id:
                 resolved_plan_type = await self._resolve_account_plan_type(account_id)
@@ -265,6 +267,7 @@ class RequestLogsRepository:
                 api_key_id=api_key_id,
                 session_id=session_id,
                 request_id=resolved_request_id,
+                archive_request_id=resolved_archive_request_id,
                 model=model,
                 plan_type=resolved_plan_type,
                 transport=transport,

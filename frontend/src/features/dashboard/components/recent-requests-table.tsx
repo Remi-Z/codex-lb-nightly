@@ -363,7 +363,10 @@ export function RecentRequestsTable({
               />
             </div>
 
-            <RequestArchivePanel requestId={selectedRequest?.requestId} requestedAt={selectedRequest?.requestedAt} />
+            <RequestArchivePanel
+              requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
+              requestedAt={selectedRequest?.requestedAt}
+            />
 
             {selectedRequestCostSummary ? (
               <div className="space-y-2">

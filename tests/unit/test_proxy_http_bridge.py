@@ -20,6 +20,7 @@ from fastapi import WebSocket
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import UpstreamResponsesWebSocket, UpstreamWebSocketMessage
 from app.core.config.settings import Settings
+from app.core.utils.request_id import get_request_id
 from app.db.models import AccountStatus, HttpBridgeSessionState
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy.http_bridge_forwarding import OwnerForwardRelayFailure
@@ -201,6 +202,104 @@ async def test_http_bridge_precreated_completed_terminal_falls_back_to_unresolve
     assert not session.pending_requests
     register_previous.assert_awaited_once()
     finalize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_upstream_text_archives_with_request_archive_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    archived: list[tuple[str | None, str]] = []
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-bridge-archive",
+        model="gpt-5.2",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        archive_request_id="archive-bridge-archive",
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(
+        key_value="bridge-archive",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+
+    def archive_received(message: UpstreamWebSocketMessage) -> None:
+        archived.append((get_request_id(), message.text or ""))
+
+    session.upstream = cast(
+        UpstreamResponsesWebSocket,
+        SimpleNamespace(close=AsyncMock(), archive_received=archive_received),
+    )
+    monkeypatch.setattr(service, "_register_http_bridge_previous_response_id", AsyncMock())
+
+    upstream_text = json.dumps(
+        {
+            "type": "response.created",
+            "response": {"id": "resp_bridge_archive", "status": "in_progress"},
+        },
+        separators=(",", ":"),
+    )
+
+    await service._process_http_bridge_upstream_text(session, upstream_text)
+
+    assert archived == [("archive-bridge-archive", upstream_text)]
+    assert request_state.response_id == "resp_bridge_archive"
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_upstream_non_text_archives_with_request_archive_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    archived: list[tuple[str | None, str, int | None]] = []
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-bridge-close-archive",
+        model="gpt-5.2",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        archive_request_id="archive-bridge-close",
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+    )
+    close_message = UpstreamWebSocketMessage(kind="close", close_code=1000)
+    session = _make_bridge_session(
+        key_value="bridge-close-archive",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+
+    def archive_received(message: UpstreamWebSocketMessage) -> None:
+        archived.append((get_request_id(), message.kind, message.close_code))
+
+    session.upstream = cast(
+        UpstreamResponsesWebSocket,
+        SimpleNamespace(
+            receive=AsyncMock(return_value=close_message),
+            close=AsyncMock(),
+            archive_received=archive_received,
+        ),
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_fail_pending_websocket_requests", AsyncMock())
+    monkeypatch.setattr(service, "_retire_stale_pending_http_bridge_session", AsyncMock())
+
+    await service._relay_http_bridge_upstream_messages(session)
+
+    assert archived == [("archive-bridge-close", "close", 1000)]
+    assert session.last_upstream_close_code == 1000
 
 
 def test_pop_terminal_websocket_request_state_precreated_completed_does_not_guess_with_ambiguous_pending() -> None:
