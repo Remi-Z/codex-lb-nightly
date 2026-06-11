@@ -3474,6 +3474,79 @@ async def test_automations_scheduled_cycle_reclaims_timed_out_claimed_run(async_
 
 
 @pytest.mark.asyncio
+async def test_automations_scheduler_finds_old_cycle_with_only_stale_running_rows(async_client, monkeypatch):
+    accounts = await _create_accounts("auto-scheduled-old-stale-a")
+    now = utcnow().replace(second=0, microsecond=0)
+    due_slot = now - timedelta(days=1)
+    scheduled_for = due_slot
+    claimed_started_at = now - timedelta(hours=2)
+    called_chatgpt_account_ids: list[str | None] = []
+
+    async def _fake_compact(*_args, **kwargs):
+        called_chatgpt_account_ids.append(kwargs.get("account_id"))
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+        job = await automations_repository.create_job(
+            name="Old scheduled stale claimed reclaim",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time=now.strftime("%H:%M"),
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[accounts[0].id],
+        )
+        await _set_job_updated_at(job.id, due_slot - timedelta(hours=1))
+        cycle_key = f"scheduled:{job.id}:{due_slot.isoformat()}"
+        cycle = await automations_repository.create_run_cycle(
+            cycle_key=cycle_key,
+            job_id=job.id,
+            trigger="scheduled",
+            cycle_expected_accounts=1,
+            cycle_window_end=due_slot,
+            accounts=[(accounts[0].id, scheduled_for)],
+        )
+        disabled_job = await automations_repository.update_job(job.id, enabled=False)
+        assert disabled_job is not None
+        run = await automations_repository.claim_run(
+            job_id=job.id,
+            trigger="scheduled",
+            slot_key=_scheduled_slot_key(job.id, account_id=accounts[0].id, due_slot=due_slot),
+            cycle_key=cycle.cycle_key,
+            cycle_expected_accounts=cycle.cycle_expected_accounts,
+            cycle_window_end=cycle.cycle_window_end,
+            scheduled_for=scheduled_for,
+            started_at=claimed_started_at,
+            account_id=accounts[0].id,
+        )
+        assert run is not None
+
+        due_job_ids = await automations_repository.list_due_scheduled_run_cycle_job_ids(now_utc=now)
+        due_cycles = await automations_repository.list_due_scheduled_run_cycles(job_id=job.id, now_utc=now)
+        executed = await service.run_due_jobs(now_utc=now)
+        stored_run = await automations_repository.get_run(run.id)
+
+    assert job.id in due_job_ids
+    assert [cycle.cycle_key for cycle in due_cycles] == [cycle_key]
+    assert executed == 1
+    assert called_chatgpt_account_ids == [accounts[0].chatgpt_account_id]
+    assert stored_run is not None
+    assert stored_run.status == "success"
+    assert stored_run.account_id == accounts[0].id
+    assert stored_run.started_at > claimed_started_at
+
+
+@pytest.mark.asyncio
 async def test_automations_scheduled_cycle_execution_uses_upstream_route(async_client, monkeypatch):
     accounts = await _create_accounts("auto-scheduled-route-a")
     now = utcnow().replace(second=0, microsecond=0)

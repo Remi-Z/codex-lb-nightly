@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha1
 from uuid import uuid4
 
@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config.settings import get_settings
 from app.core.utils.time import utcnow
 from app.db.models import (
     Account,
@@ -538,17 +539,31 @@ class AutomationsRepository:
         if not candidates:
             return []
         cycle_keys = [cycle.cycle_key for cycle in candidates]
+        stale_started_before = _automation_run_execution_claim_stale_started_before(now_utc)
         result = await self._session.execute(
-            select(AutomationRun.cycle_key, AutomationRun.account_id, AutomationRun.slot_key).where(
-                AutomationRun.cycle_key.in_(cycle_keys)
-            )
+            select(
+                AutomationRun.cycle_key,
+                AutomationRun.account_id,
+                AutomationRun.slot_key,
+                AutomationRun.status,
+                AutomationRun.finished_at,
+                AutomationRun.started_at,
+                AutomationRun.scheduled_for,
+            ).where(AutomationRun.cycle_key.in_(cycle_keys))
         )
-        completed_account_ids_by_cycle_key: dict[str, set[str]] = {}
-        slot_keys_by_cycle_key: dict[str, set[str]] = {}
-        for cycle_key, account_id, slot_key in result.all():
+        occupied_account_ids_by_cycle_key: dict[str, set[str]] = {}
+        occupied_slot_keys_by_cycle_key: dict[str, set[str]] = {}
+        for cycle_key, account_id, slot_key, status, finished_at, started_at, scheduled_for in result.all():
+            is_stale_running = (
+                status == "running"
+                and finished_at is None
+                and (started_at <= scheduled_for or started_at < stale_started_before)
+            )
+            if is_stale_running:
+                continue
             if account_id is not None:
-                completed_account_ids_by_cycle_key.setdefault(cycle_key, set()).add(account_id)
-            slot_keys_by_cycle_key.setdefault(cycle_key, set()).add(slot_key)
+                occupied_account_ids_by_cycle_key.setdefault(cycle_key, set()).add(account_id)
+            occupied_slot_keys_by_cycle_key.setdefault(cycle_key, set()).add(slot_key)
 
         due_cycles: list[AutomationRunCycleRecord] = []
         for cycle in candidates:
@@ -556,20 +571,20 @@ class AutomationsRepository:
             if due_slot is None:
                 due_cycles.append(cycle)
                 continue
-            completed_account_ids = completed_account_ids_by_cycle_key.get(cycle.cycle_key, set())
-            slot_keys = slot_keys_by_cycle_key.get(cycle.cycle_key, set())
+            occupied_account_ids = occupied_account_ids_by_cycle_key.get(cycle.cycle_key, set())
+            occupied_slot_keys = occupied_slot_keys_by_cycle_key.get(cycle.cycle_key, set())
             has_due_account = False
             for cycle_account in cycle.accounts:
                 if cycle_account.scheduled_for > now_utc:
                     continue
-                if cycle_account.account_id in completed_account_ids:
+                if cycle_account.account_id in occupied_account_ids:
                     continue
                 slot_key = _scheduled_slot_key(
                     cycle.job_id,
                     account_id=cycle_account.account_id,
                     due_slot=due_slot,
                 )
-                if slot_key in slot_keys:
+                if slot_key in occupied_slot_keys:
                     continue
                 has_due_account = True
                 break
@@ -579,6 +594,7 @@ class AutomationsRepository:
 
     @staticmethod
     def _pending_due_scheduled_cycle_account_exists(*, now_utc: datetime):
+        stale_started_before = _automation_run_execution_claim_stale_started_before(now_utc)
         return (
             select(AutomationRunCycleAccount.account_id)
             .where(AutomationRunCycleAccount.cycle_key == AutomationRunCycle.cycle_key)
@@ -588,6 +604,16 @@ class AutomationsRepository:
                     select(AutomationRun.id)
                     .where(AutomationRun.cycle_key == AutomationRunCycleAccount.cycle_key)
                     .where(AutomationRun.account_id == AutomationRunCycleAccount.account_id)
+                    .where(
+                        or_(
+                            AutomationRun.status != "running",
+                            AutomationRun.finished_at.is_not(None),
+                            and_(
+                                AutomationRun.started_at > AutomationRun.scheduled_for,
+                                AutomationRun.started_at >= stale_started_before,
+                            ),
+                        )
+                    )
                 )
             )
         )
@@ -1664,6 +1690,12 @@ def _serialize_schedule_days(days: Sequence[str]) -> str:
     if not normalized:
         return ",".join(DEFAULT_AUTOMATION_SCHEDULE_DAYS)
     return ",".join(normalized)
+
+
+def _automation_run_execution_claim_stale_started_before(now_utc: datetime) -> datetime:
+    settings = get_settings()
+    timeout_seconds = max(30.0, settings.compact_request_budget_seconds + 30.0)
+    return now_utc - timedelta(seconds=timeout_seconds)
 
 
 def _scheduled_slot_key(job_id: str, *, account_id: str, due_slot: datetime) -> str:
