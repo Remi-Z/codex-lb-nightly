@@ -1035,9 +1035,7 @@ class AutomationsService:
                 )
                 completed = await self._repository.complete_run(
                     run.id,
-                    status=AUTOMATION_RUN_STATUS_PARTIAL
-                    if attempt_count > 1
-                    else AUTOMATION_RUN_STATUS_SUCCESS,
+                    status=AUTOMATION_RUN_STATUS_PARTIAL if attempt_count > 1 else AUTOMATION_RUN_STATUS_SUCCESS,
                     finished_at=utcnow(),
                     account_id=account.id,
                     error_code=None,
