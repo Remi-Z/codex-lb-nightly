@@ -27,7 +27,7 @@ export function AccountProxyBinding({ account, admin, busy, onSave }: AccountPro
   }
 
   return (
-    <section className="rounded-xl border bg-card p-4">
+    <section className="rounded-lg border bg-muted/30 p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
@@ -53,7 +53,7 @@ export function AccountProxyBinding({ account, admin, busy, onSave }: AccountPro
       </div>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <Select value={selectedPoolId} onValueChange={setSelectedPoolId} disabled={busy || admin.pools.length === 0}>
-          <SelectTrigger className="h-8 text-xs" aria-label="Account proxy pool">
+          <SelectTrigger className="h-8 w-full min-w-0 text-xs sm:w-auto sm:flex-1" aria-label="Account proxy pool">
             <SelectValue placeholder="Select proxy pool" />
           </SelectTrigger>
           <SelectContent>

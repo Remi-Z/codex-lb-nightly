@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Plus, Search, Upload } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AccountListItem } from "@/features/accounts/components/account-list-item";
+import { AddAccountDialog } from "@/features/accounts/components/add-account-dialog";
 import { WindowsOauthHelp } from "@/features/accounts/components/windows-oauth-help";
 import type { AccountSummary } from "@/features/accounts/schemas";
 import {
@@ -46,6 +47,7 @@ export function AccountList({
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [helpOpen, setHelpOpen] = useState(false);
+  const [chooserOpen, setChooserOpen] = useState(false);
   const quotaDisplay = useAccountQuotaDisplayStore((s) => s.quotaDisplay);
   const activeSortMode = sortMode ?? DEFAULT_ACCOUNT_SORT_MODE;
 
@@ -117,17 +119,6 @@ export function AccountList({
         </Select>
       </div>
 
-      <div className="flex gap-2">
-        <Button type="button" size="sm" variant="outline" onClick={onOpenImport} className="h-8 flex-1 gap-1.5 text-xs">
-          <Upload className="h-3.5 w-3.5" />
-          Import
-        </Button>
-        <Button type="button" size="sm" onClick={onOpenOauth} className="h-8 flex-1 gap-1.5 text-xs">
-          <Plus className="h-3.5 w-3.5" />
-          Add Account
-        </Button>
-      </div>
-
       <div>
         <Button
           type="button"
@@ -160,7 +151,22 @@ export function AccountList({
             />
           ))
         )}
+        <button
+          type="button"
+          onClick={() => setChooserOpen(true)}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed p-3 text-xs font-medium text-muted-foreground transition-colors outline-none hover:bg-muted/40 hover:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add account
+        </button>
       </div>
+
+      <AddAccountDialog
+        open={chooserOpen}
+        onOpenChange={setChooserOpen}
+        onImport={onOpenImport}
+        onAddAccount={onOpenOauth}
+      />
     </div>
   );
 }

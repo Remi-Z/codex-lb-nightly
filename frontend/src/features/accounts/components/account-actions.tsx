@@ -80,7 +80,7 @@ export function AccountActions({
             <SelectTrigger
               aria-label="Routing policy"
               size="sm"
-              className="h-8 w-44 text-xs"
+              className="h-8 min-w-32 flex-1 text-xs"
             >
               <SelectValue />
             </SelectTrigger>
