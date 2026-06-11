@@ -4070,6 +4070,34 @@ async def test_stream_responses_websocket_omits_http_only_transport_fields(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_codex_websocket_events_raises_sanitized_transport_error_on_ws_error():
+    websocket = _WsResponse(
+        [
+            _WsMessage(
+                proxy_module.aiohttp.WSMsgType.ERROR,
+                OSError("proxy http://user:pass@proxy.local:8080 websocket failed"),
+            )
+        ]
+    )
+
+    with pytest.raises(proxy_module.CodexTransportError) as exc_info:
+        _ = [
+            event
+            async for event in proxy_module._stream_codex_websocket_events(
+                websocket,
+                idle_timeout_seconds=45.0,
+                total_timeout_seconds=60.0,
+                max_event_bytes=1024,
+            )
+        ]
+
+    message = str(exc_info.value)
+    assert "OSError" in message
+    assert "user:pass" not in message
+    assert "proxy.local" not in message
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_via_websocket_counts_connect_and_send_against_total_timeout(monkeypatch):
     recorded: dict[str, float | None] = {}
     websocket = _WsResponse([])

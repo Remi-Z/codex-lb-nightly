@@ -1405,7 +1405,11 @@ async def _stream_codex_websocket_events(
         if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
             break
         if msg.type == aiohttp.WSMsgType.ERROR:
-            break
+            exc = websocket.exception()
+            if exc is None and isinstance(msg.data, BaseException):
+                exc = msg.data
+            exc = exc or aiohttp.ClientError("Upstream websocket error")
+            raise CodexTransportError(codex_transport_error_message("websocket stream", None, exc)) from exc
         if msg.type == aiohttp.WSMsgType.TEXT:
             text = msg.data if isinstance(msg.data, str) else str(msg.data)
         elif msg.type == aiohttp.WSMsgType.BINARY:
