@@ -533,7 +533,7 @@ async def test_automations_runs_options_respect_status_filter(async_client):
 
 
 @pytest.mark.asyncio
-async def test_automations_run_now_fails_over_to_next_account(async_client, monkeypatch):
+async def test_automations_run_now_keeps_per_account_slots_pinned_on_retryable_failure(async_client, monkeypatch):
     accounts = await _create_accounts("auto-fallback-a", "auto-fallback-b")
     call_order: list[str | None] = []
 
@@ -581,8 +581,11 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     assert runs_response.status_code == 200
     runs_payload = runs_response.json()["items"]
     assert len(runs_payload) == 2
-    statuses = {entry["status"] for entry in runs_payload}
-    assert statuses == {"partial", "success"}
+    statuses_by_account = {entry["accountId"]: entry["status"] for entry in runs_payload}
+    assert statuses_by_account == {
+        accounts[0].id: "failed",
+        accounts[1].id: "success",
+    }
 
     grouped_response = await async_client.get(
         "/api/automations/runs",
@@ -656,10 +659,8 @@ async def test_automations_run_now_fails_over_to_next_account(async_client, monk
     )
     assert options_with_status_response.status_code == 200
     options_with_status_payload = options_with_status_response.json()
-    assert options_with_status_payload["accountIds"] == [accounts[1].id]
-    assert call_order[:2] == [f"chatgpt-{accounts[0].id}", f"chatgpt-{accounts[1].id}"]
-    assert len(call_order) == 3
-    assert set(call_order) == {f"chatgpt-{accounts[0].id}", f"chatgpt-{accounts[1].id}"}
+    assert options_with_status_payload["accountIds"] == [accounts[0].id, accounts[1].id]
+    assert call_order == [f"chatgpt-{accounts[0].id}", f"chatgpt-{accounts[1].id}"]
 
 
 @pytest.mark.asyncio
@@ -2686,6 +2687,72 @@ async def test_automations_scheduler_skips_ineligible_snapshot_accounts_without_
     assert run_page_after_third.items[0].total_accounts == 2
     assert run_page_after_third.items[0].completed_accounts == 2
     assert run_page_after_third.items[0].pending_accounts == 0
+
+
+@pytest.mark.asyncio
+async def test_automations_scheduler_keeps_forced_cycle_slot_pinned_on_retryable_failure(
+    async_client,
+    monkeypatch,
+):
+    accounts = await _create_accounts(
+        "auto-pinned-slot-a",
+        "auto-pinned-slot-b",
+    )
+    now = utcnow().replace(second=0, microsecond=0)
+    called_chatgpt_account_ids: list[str | None] = []
+
+    async def _fake_compact(*_args, **kwargs):
+        account_id = kwargs.get("account_id")
+        called_chatgpt_account_ids.append(account_id)
+        if account_id == accounts[0].chatgpt_account_id:
+            raise ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "The usage limit has been reached"),
+            )
+        return SimpleNamespace()
+
+    monkeypatch.setattr("app.modules.automations.service.core_compact_responses", _fake_compact)
+
+    async with SessionLocal() as session:
+        automations_repository = AutomationsRepository(session)
+        accounts_repository = AccountsRepository(session)
+        service = AutomationsService(automations_repository, accounts_repository)
+        job = await automations_repository.create_job(
+            name="Pinned scheduled slot",
+            enabled=True,
+            include_paused_accounts=False,
+            schedule_type="daily",
+            schedule_time=now.strftime("%H:%M"),
+            schedule_timezone="UTC",
+            schedule_days=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            schedule_threshold_minutes=0,
+            model="gpt-5.3-codex",
+            reasoning_effort=None,
+            prompt="ping",
+            account_ids=[accounts[0].id, accounts[1].id],
+        )
+        await _set_job_updated_at(job.id, now)
+
+        executed = await service.run_due_jobs(now_utc=now + timedelta(seconds=5))
+        cycle_runs = await automations_repository.list_runs_for_cycle_key(
+            cycle_key=f"scheduled:{job.id}:{now.isoformat()}"
+        )
+        details = await service.get_run_details(cycle_runs[0].id)
+
+    assert executed == 2
+    assert called_chatgpt_account_ids == [
+        accounts[0].chatgpt_account_id,
+        accounts[1].chatgpt_account_id,
+    ]
+    statuses_by_account = {run.account_id: run.status for run in cycle_runs}
+    assert statuses_by_account == {
+        accounts[0].id: "failed",
+        accounts[1].id: "success",
+    }
+    assert {run.attempt_count for run in cycle_runs} == {1}
+    assert details.total_accounts == 2
+    assert details.completed_accounts == 2
+    assert details.pending_accounts == 0
 
 
 @pytest.mark.asyncio
