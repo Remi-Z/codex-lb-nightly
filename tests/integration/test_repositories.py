@@ -453,6 +453,48 @@ async def test_accounts_upsert_merge_by_chatgpt_identity_reuses_row_when_email_c
 
 
 @pytest.mark.asyncio
+async def test_accounts_upsert_merge_by_chatgpt_identity_matches_email_row_among_collisions(db_setup):
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+
+        original_other_email = _make_account_with_chatgpt_id(
+            "acc_other_email",
+            "other@example.com",
+            "chatgpt_email_collision",
+        )
+        await repo.upsert(original_other_email, merge_by_email=False)
+
+        canonical_email = _make_account_with_chatgpt_id(
+            "acc_matching_email",
+            "current@example.com",
+            "chatgpt_email_collision",
+        )
+        await repo.upsert(canonical_email, merge_by_email=False)
+
+        reauth = _make_account_with_chatgpt_id(
+            "acc_reauth",
+            "current@example.com",
+            "chatgpt_email_collision",
+        )
+        reauth.plan_type = "team"
+        saved = await repo.upsert(reauth, merge_by_email=False, merge_by_chatgpt_identity=True)
+
+        assert saved.id == "acc_matching_email"
+        assert saved.email == "current@example.com"
+        assert saved.plan_type == "team"
+
+        rows = list(
+            (await session.execute(select(Account).where(Account.chatgpt_account_id == "chatgpt_email_collision")))
+            .scalars()
+            .all()
+        )
+        assert {(row.id, row.email) for row in rows} == {
+            ("acc_other_email", "other@example.com"),
+            ("acc_matching_email", "current@example.com"),
+        }
+
+
+@pytest.mark.asyncio
 async def test_accounts_upsert_merge_by_chatgpt_identity_picks_oldest_canonical(db_setup):
     async with SessionLocal() as session:
         repo = AccountsRepository(session)

@@ -310,12 +310,12 @@ class AccountsRepository:
     ) -> Account | None:
         """Return the canonical local account row for a ChatGPT identity.
 
-        Order of preference, so that reauth reuses the row that already
-        carries the historical usage and audit trail:
+        Order of preference, so that reauth targets the matching real-email
+        slot when one exists, while still allowing an upstream email change
+        to reuse a single unambiguous identity row:
 
-        1. The oldest row by ``created_at`` (deterministic tie-break on
-           ``id``) — this is almost always the original row, before any
-           ``__copyN`` rows were created.
+        1. The oldest row with the incoming email.
+        2. The only identity row when no email match exists.
         """
 
         stmt = select(Account).where(Account.chatgpt_account_id == chatgpt_account_id)
@@ -326,8 +326,20 @@ class AccountsRepository:
         else:
             stmt = stmt.where(Account.workspace_id.is_(None))
 
-        result = await self._session.execute(stmt.order_by(*order_by).limit(1))
-        return result.scalar_one_or_none()
+        result = await self._session.execute(stmt.order_by(*order_by))
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return None
+        if not email:
+            return candidates[0]
+
+        for candidate in candidates:
+            if candidate.email == email:
+                return candidate
+
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
 
     async def _reconcile_chatgpt_identity_duplicates(
         self,
