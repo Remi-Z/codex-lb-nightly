@@ -280,10 +280,7 @@ class AccountsRepository:
                 await self._session.refresh(existing_by_id)
                 return existing_by_id
             account.id = await self._next_available_account_id(account.id)
-        elif (
-            not preserve_unknown_workspace_duplicates
-            and _workspace_slot_key(account) is None
-        ):
+        elif not preserve_unknown_workspace_duplicates and _workspace_slot_key(account) is None:
             existing_by_email = await self._single_account_by_email(account.email)
             if existing_by_email and not _can_reuse_email_fallback(existing_by_email, account):
                 existing_by_email = None
