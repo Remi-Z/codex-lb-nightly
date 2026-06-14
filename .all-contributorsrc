@@ -727,6 +727,17 @@
         "test",
         "doc"
       ]
+    },
+    {
+      "login": "rupebac",
+      "name": "Rubén Pérez Bachiller",
+      "avatar_url": "https://avatars.githubusercontent.com/u/452231?v=4",
+      "profile": "https://github.com/rupebac",
+      "contributions": [
+        "code",
+        "test",
+        "bug"
+      ]
     }
   ],
   "contributorsPerLine": 7,
