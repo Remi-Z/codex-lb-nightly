@@ -716,6 +716,17 @@
         "code",
         "test"
       ]
+    },
+    {
+      "login": "plastictaste",
+      "name": "plastictaste",
+      "avatar_url": "https://avatars.githubusercontent.com/u/261646970?v=4",
+      "profile": "https://github.com/plastictaste",
+      "contributions": [
+        "code",
+        "test",
+        "doc"
+      ]
     }
   ],
   "contributorsPerLine": 7,
