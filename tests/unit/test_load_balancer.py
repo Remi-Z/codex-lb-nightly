@@ -1468,6 +1468,37 @@ def test_state_from_account_keeps_active_account_selectable_when_primary_usage_s
     assert selection.account.account_id == state.account_id
 
 
+def test_state_from_account_clears_stale_advisory_account_reset_for_active_account(monkeypatch):
+    now = 1_700_000_000.0
+    future_reset = int(now + 300)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+    monkeypatch.setattr("app.core.balancer.logic.time.time", lambda: now)
+
+    state = _state_from_account(
+        account=_make_test_account(status=AccountStatus.ACTIVE, reset_at=future_reset),
+        primary_entry=_make_test_usage(
+            window="primary",
+            used_percent=100.0,
+            reset_at=future_reset,
+            recorded_at=_epoch_to_naive_utc(now - 30),
+        ),
+        secondary_entry=None,
+        runtime=RuntimeState(reset_at=future_reset),
+    )
+
+    assert state.status == AccountStatus.ACTIVE
+    assert state.used_percent == 100.0
+    assert state.reset_at is None
+    assert state.primary_reset_at == future_reset
+
+    handle_rate_limit(state, {"message": "rate limit"})
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at is None
+    assert state.cooldown_until is not None
+    assert now + 0.18 <= state.cooldown_until <= now + 0.22
+
+
 def test_state_from_account_keeps_active_account_selectable_when_secondary_usage_snapshot_is_exhausted(
     monkeypatch,
 ):
