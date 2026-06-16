@@ -1941,6 +1941,7 @@ def _state_from_account(
         credits_has=credits_has,
         credits_unlimited=credits_unlimited,
         credits_balance=credits_balance,
+        infer_status_from_usage=False,
     )
 
     if status == AccountStatus.QUOTA_EXCEEDED:
