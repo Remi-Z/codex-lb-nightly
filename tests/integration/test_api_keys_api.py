@@ -2356,7 +2356,7 @@ async def test_release_stale_usage_reservations_uses_sqlite_writer_section(async
 
 
 @pytest.mark.asyncio
-async def test_allowed_but_unsupported_model_is_exposed(async_client):
+async def test_allowed_but_unsupported_model_is_not_exposed(async_client):
     registry = get_model_registry()
     models = [
         _make_upstream_model(_TEST_MODELS[0], supported_in_api=True),
@@ -2389,7 +2389,7 @@ async def test_allowed_but_unsupported_model_is_exposed(async_client):
     assert listed.status_code == 200
     ids = {item["id"] for item in listed.json()["data"]}
     assert _TEST_MODELS[0] in ids
-    assert _HIDDEN_MODEL in ids
+    assert _HIDDEN_MODEL not in ids
 
 
 # ---------------------------------------------------------------------------

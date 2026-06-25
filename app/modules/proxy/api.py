@@ -1712,23 +1712,30 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
 
     if not models:
         await _release_reservation(reservation)
-        return JSONResponse(content=CodexModelsResponse(models=[]).model_dump(mode="json"))
+        return JSONResponse(content=CodexModelsResponse(models=[], data=[]).model_dump(mode="json"))
 
     entries: list[CodexModelEntry] = []
+    data: list[ModelListItem] = []
     for slug, model in models.items():
+        if not model.supported_in_api:
+            continue
         if visibility_allowed_models is None:
             if not is_public_model(model, allowed_models):
                 continue
-            entries.append(_to_codex_model_entry(model))
+            entry = _to_codex_model_entry(model)
+            entries.append(entry)
+            if entry.visibility == "list":
+                data.append(_to_model_list_item(slug, model, created=_model_list_created_at(model)))
             continue
-        entries.append(
-            _to_codex_model_entry(
-                model,
-                visibility="list" if slug in visibility_allowed_models else "hide",
-            )
+        entry = _to_codex_model_entry(
+            model,
+            visibility="list" if slug in visibility_allowed_models else "hide",
         )
+        entries.append(entry)
+        if entry.visibility == "list":
+            data.append(_to_model_list_item(slug, model, created=_model_list_created_at(model)))
     await _release_reservation(reservation)
-    return JSONResponse(content=CodexModelsResponse(models=entries).model_dump(mode="json"))
+    return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
@@ -1746,36 +1753,27 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
 
     if not models:
         await _release_reservation(reservation)
-        return JSONResponse(content=ModelListResponse(data=[]).model_dump(mode="json"))
+        return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=[])))
 
     items: list[ModelListItem] = []
     for slug, model in models.items():
         if not is_public_model(model, allowed_models):
             continue
-        items.append(
-            ModelListItem.model_validate(
-                {
-                    "id": slug,
-                    "created": created,
-                    "owned_by": "codex-lb",
-                    "metadata": _to_model_metadata(model),
-                    "api_types": ["chat_completions"],
-                    "capabilities": _v1_model_capabilities(model),
-                    "context_length": _v1_input_context_window(model),
-                    "contextLength": _v1_input_context_window(model),
-                    "max_output_tokens": _v1_max_output_tokens(model),
-                    "maxOutputTokens": _v1_max_output_tokens(model),
-                    "supports_reasoning": _v1_supports_reasoning(model),
-                    "supportsReasoning": _v1_supports_reasoning(model),
-                    "supports_images": _v1_supports_vision(model),
-                    "supportsImages": _v1_supports_vision(model),
-                    "supports_vision": _v1_supports_vision(model),
-                    "supportsVision": _v1_supports_vision(model),
-                }
-            )
-        )
+        items.append(_to_model_list_item(slug, model, created=created))
     await _release_reservation(reservation)
-    return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
+    return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
+
+
+def _dump_v1_models_response(response: ModelListResponse) -> dict[str, JsonValue]:
+    payload = response.model_dump(mode="json")
+    for item in payload["data"]:
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        for key in ("additional_speed_tiers", "service_tiers", "default_service_tier"):
+            if metadata.get(key) is None:
+                metadata.pop(key, None)
+    return payload
 
 
 def _allowed_models_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:
@@ -1792,6 +1790,39 @@ def _canonical_model_set(models: Iterable[str]) -> set[str]:
 
 def _canonical_model_slug(model: str) -> str:
     return resolve_model_alias(model) or model
+
+
+def _to_model_list_item(slug: str, model: UpstreamModel, *, created: int) -> ModelListItem:
+    return ModelListItem.model_validate(
+        {
+            "id": slug,
+            "created": created,
+            "owned_by": "codex-lb",
+            "metadata": _to_model_metadata(model),
+            "api_types": ["chat_completions"],
+            "capabilities": _v1_model_capabilities(model),
+            "context_length": _v1_input_context_window(model),
+            "contextLength": _v1_input_context_window(model),
+            "max_output_tokens": _v1_max_output_tokens(model),
+            "maxOutputTokens": _v1_max_output_tokens(model),
+            "supports_reasoning": _v1_supports_reasoning(model),
+            "supportsReasoning": _v1_supports_reasoning(model),
+            "supports_images": _v1_supports_vision(model),
+            "supportsImages": _v1_supports_vision(model),
+            "supports_vision": _v1_supports_vision(model),
+            "supportsVision": _v1_supports_vision(model),
+        }
+    )
+
+
+def _model_list_created_at(model: UpstreamModel) -> int:
+    for key in ("created", "created_at", "createdAt"):
+        raw_value = model.raw.get(key)
+        if isinstance(raw_value, int):
+            return raw_value
+        if isinstance(raw_value, float):
+            return int(raw_value)
+    return 0
 
 
 def _codex_model_visibility_allowed_models(api_key: ApiKeyData | None) -> set[str] | None:
@@ -1926,7 +1957,29 @@ def _to_model_metadata(model: UpstreamModel) -> ModelMetadata:
         supported_in_api=model.supported_in_api,
         minimal_client_version=model.minimal_client_version,
         priority=model.priority,
+        additional_speed_tiers=_raw_string_list(model.raw, "additional_speed_tiers"),
+        service_tiers=_raw_object_list(model.raw, "service_tiers"),
+        default_service_tier=_raw_optional_string(model.raw, "default_service_tier"),
     )
+
+
+def _raw_string_list(raw: Mapping[str, JsonValue], key: str) -> list[str] | None:
+    value = raw.get(key)
+    if not isinstance(value, list):
+        return None
+    return [item for item in value if isinstance(item, str)]
+
+
+def _raw_object_list(raw: Mapping[str, JsonValue], key: str) -> list[dict[str, JsonValue]] | None:
+    value = raw.get(key)
+    if not isinstance(value, list):
+        return None
+    return [dict(cast(Mapping[str, JsonValue], item)) for item in value if isinstance(item, Mapping)]
+
+
+def _raw_optional_string(raw: Mapping[str, JsonValue], key: str) -> str | None:
+    value = raw.get(key)
+    return value if isinstance(value, str) else None
 
 
 @v1_router.post(
