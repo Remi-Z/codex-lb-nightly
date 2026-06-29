@@ -80,20 +80,18 @@ class AccountsRepository:
         if account_ids:
             conditions.append(RequestLog.account_id.in_(account_ids))
 
-        latest_request_log_ids_stmt = select(
-            RequestLog.id.label("request_log_id"),
-            func.row_number()
-            .over(
-                partition_by=(
-                    RequestLog.account_id,
-                    RequestLog.request_id,
-                    RequestLog.requested_at,
-                ),
-                order_by=(RequestLog.requested_at.desc(), RequestLog.id.desc()),
+        latest_request_log_ids = (
+            select(
+                func.max(RequestLog.id).label("request_log_id"),
             )
-            .label("request_log_rank"),
-        ).where(*conditions)
-        latest_request_log_ids = latest_request_log_ids_stmt.subquery("latest_request_log_ids")
+            .where(*conditions)
+            .group_by(
+                RequestLog.account_id,
+                RequestLog.request_id,
+                RequestLog.requested_at,
+            )
+            .subquery("latest_request_log_ids")
+        )
         stmt = (
             select(
                 RequestLog.account_id,
@@ -104,7 +102,6 @@ class AccountsRepository:
                 func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("total_cost_usd"),
             )
             .join(latest_request_log_ids, RequestLog.id == latest_request_log_ids.c.request_log_id)
-            .where(latest_request_log_ids.c.request_log_rank == 1)
             .group_by(RequestLog.account_id)
         )
         result = await self._session.execute(stmt)

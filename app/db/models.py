@@ -1058,6 +1058,21 @@ Index("idx_logs_account_time", RequestLog.account_id, RequestLog.requested_at)
 Index("idx_logs_api_key_time", RequestLog.api_key_id, RequestLog.requested_at.desc(), RequestLog.id.desc())
 Index("idx_logs_api_key_time_account", RequestLog.api_key_id, RequestLog.requested_at.desc(), RequestLog.account_id)
 Index("idx_logs_request_kind_time", RequestLog.request_kind, RequestLog.requested_at.desc(), RequestLog.id.desc())
+Index(
+    "idx_logs_account_kind_deleted_latest",
+    RequestLog.account_id,
+    RequestLog.request_kind,
+    RequestLog.deleted_at,
+    RequestLog.requested_at,
+    RequestLog.id,
+)
+Index(
+    "idx_logs_account_request_latest",
+    RequestLog.account_id,
+    RequestLog.request_id,
+    RequestLog.requested_at,
+    RequestLog.id,
+)
 Index("idx_logs_requested_at", RequestLog.requested_at)
 Index("idx_logs_source_requested_at", RequestLog.source, RequestLog.requested_at.desc())
 Index("idx_logs_requested_at_id", RequestLog.requested_at.desc(), RequestLog.id.desc())
@@ -1181,4 +1196,13 @@ Index(
     AdditionalUsageHistory.window,
     AdditionalUsageHistory.account_id,
     AdditionalUsageHistory.recorded_at,
+)
+Index(
+    "ix_additional_usage_quota_window_latest",
+    AdditionalUsageHistory.quota_key,
+    AdditionalUsageHistory.window,
+    AdditionalUsageHistory.account_id,
+    AdditionalUsageHistory.recorded_at.desc(),
+    AdditionalUsageHistory.used_percent.desc(),
+    AdditionalUsageHistory.id.desc(),
 )
