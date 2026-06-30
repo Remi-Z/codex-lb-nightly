@@ -513,6 +513,7 @@ async def test_run_startup_migrations_drops_accounts_email_unique_with_non_casca
             assert "hide_upstream_quota_from_api_keys" in dashboard_columns
             assert dashboard_column_defaults["hide_upstream_quota_from_api_keys"] in ("0", 0, False)
             assert "single_account_id" in dashboard_columns
+            assert "limit_warmup_staggered_idle_enabled" in dashboard_columns
             assert "usage_sections" in api_key_columns
             assert api_key_column_defaults["usage_sections"] in (
                 "'upstream_limits,account_pool_usage'",

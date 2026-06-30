@@ -458,6 +458,7 @@ export function createDashboardSettings(
 		limitWarmupMinAvailablePercent: 100,
 		guestAccessEnabled: false,
 		guestPasswordConfigured: false,
+		limitWarmupStaggeredIdleEnabled: false,
 		...overrides,
 	});
 }
