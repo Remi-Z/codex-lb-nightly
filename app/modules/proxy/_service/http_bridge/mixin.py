@@ -65,6 +65,7 @@ from app.modules.proxy._service.compact import (
 )
 from app.modules.proxy._service.http_bridge.account_sessions import _HTTPBridgeAccountSessionsMixin
 from app.modules.proxy._service.http_bridge.helpers import (
+    _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR,
     _active_http_bridge_instance_ring,
     _durable_bridge_lookup_active_owner,
     _durable_bridge_lookup_allows_local_reuse,
@@ -101,6 +102,12 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _record_bridge_drain_recovery_allowed,
     _record_bridge_first_turn_timeout,
     _record_bridge_reattach,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_pending_count_nowait as helpers_http_bridge_pending_count_nowait,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
+    http_bridge_activity_snapshot_nowait as helpers_http_bridge_activity_snapshot_nowait,
 )
 from app.modules.proxy._service.http_bridge.owner_forwarding import _HTTPBridgeOwnerForwardingMixin
 from app.modules.proxy._service.http_bridge.protocol import _HTTPBridgeServiceProtocol
@@ -236,33 +243,16 @@ class _HTTPBridgeMixin(
             )
             return max(visible_pending_count, session.queued_request_count)
 
+    def http_bridge_activity_snapshot_nowait(self) -> dict[str, int | bool]:
+        return helpers_http_bridge_activity_snapshot_nowait(self)
+
     def _http_bridge_pending_count_nowait(
         self,
         session: "_HTTPBridgeSession",
         *,
         context: str,
     ) -> int | None:
-        try:
-            session.pending_lock.acquire_nowait()
-        except (anyio.WouldBlock, RuntimeError):
-            logger.warning(
-                "http_bridge_pending_count_unavailable context=%s bridge_kind=%s bridge_key=%s account_id=%s model=%s",
-                context,
-                session.key.affinity_kind,
-                _hash_identifier(session.key.affinity_key),
-                session.account.id,
-                session.request_model,
-            )
-            return None
-        try:
-            visible_pending_count = sum(
-                1
-                for request_state in session.pending_requests
-                if _http_bridge_request_counts_against_queue(request_state)
-            )
-            return max(visible_pending_count, session.queued_request_count)
-        finally:
-            session.pending_lock.release()
+        return helpers_http_bridge_pending_count_nowait(session, context=context)
 
     async def _close_http_bridge_session_bounded(
         self,
@@ -1272,6 +1262,11 @@ class _HTTPBridgeMixin(
                                 )
                         else:
                             inflight_future = asyncio.get_running_loop().create_future()
+                            setattr(
+                                inflight_future,
+                                _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR,
+                                _service_time().monotonic(),
+                            )
                             self._http_bridge_inflight_sessions[key] = inflight_future
                             owns_creation = True
 
