@@ -1,0 +1,295 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+  security-events: write
+
+jobs:
+  validate:
+    name: Validate nightly candidate
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: main
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Run canonical nightly validation gate
+        run: make ci-fast
+
+  release-metadata:
+    name: Resolve nightly metadata
+    runs-on: ubuntu-24.04
+    needs: [validate]
+    outputs:
+      base_version: ${{ steps.meta.outputs.base_version }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      date_utc: ${{ steps.meta.outputs.date_utc }}
+      nightly_id: ${{ steps.meta.outputs.nightly_id }}
+      immutable_tag: ${{ steps.meta.outputs.immutable_tag }}
+      channel_tag: ${{ steps.meta.outputs.channel_tag }}
+      docker_version_tag: ${{ steps.meta.outputs.docker_version_tag }}
+      helm_version: ${{ steps.meta.outputs.helm_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: main
+
+      - name: Resolve nightly metadata
+        id: meta
+        shell: bash
+        run: python -m scripts.nightly_release_metadata
+
+      - name: Ensure immutable nightly tag is safe
+        shell: bash
+        env:
+          TAG: ${{ steps.meta.outputs.immutable_tag }}
+          SHA: ${{ steps.meta.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/${TAG}"
+          if git ls-remote --exit-code --tags origin "${tag_ref}" >/dev/null 2>&1; then
+            existing_target="$(git ls-remote origin "${tag_ref}^{}" | awk '{print $1}')"
+            if [ -z "${existing_target}" ]; then
+              existing_target="$(git ls-remote origin "${tag_ref}" | awk '{print $1}')"
+            fi
+            if [ "${existing_target}" != "${SHA}" ]; then
+              echo "::error::${TAG} already points to ${existing_target}, not ${SHA}."
+              exit 1
+            fi
+          fi
+
+  docker-image:
+    name: Publish nightly Docker image
+    runs-on: ubuntu-24.04
+    needs: [release-metadata]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push nightly Docker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.release-metadata.outputs.docker_version_tag }}
+            ghcr.io/${{ github.repository }}:${{ needs.release-metadata.outputs.channel_tag }}
+          cache-from: type=gha,scope=codex-lb-nightly
+          cache-to: type=gha,mode=max,scope=codex-lb-nightly
+
+      - name: Set lowercase image ref
+        id: image
+        env:
+          IMAGE_VERSION: ${{ needs.release-metadata.outputs.docker_version_tag }}
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:${IMAGE_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan Docker image with Trivy (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: .github/workflows/nightly-release.yml:docker
+
+  helm-chart:
+    name: Publish nightly Helm chart
+    runs-on: ubuntu-24.04
+    needs: [release-metadata]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: main
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+
+      - name: Build Helm dependencies
+        run: helm dependency build deploy/helm/codex-lb/
+
+      - name: Log in to GHCR (Helm)
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io \
+              --username "${REGISTRY_USERNAME}" \
+              --password-stdin
+
+      - name: Package nightly Helm chart
+        env:
+          HELM_VERSION: ${{ needs.release-metadata.outputs.helm_version }}
+          DOCKER_VERSION_TAG: ${{ needs.release-metadata.outputs.docker_version_tag }}
+        run: |
+          mkdir -p .helm-pkg
+          helm package deploy/helm/codex-lb/ \
+            --version "${HELM_VERSION}" \
+            --app-version "${DOCKER_VERSION_TAG}" \
+            -d .helm-pkg/
+
+      - name: Push nightly Helm chart to GHCR
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          helm push .helm-pkg/codex-lb-*.tgz "oci://ghcr.io/${OWNER_LC}/charts"
+
+  github-release:
+    name: Publish nightly GitHub prerelease
+    runs-on: ubuntu-24.04
+    needs: [release-metadata, docker-image, helm-chart]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: main
+
+      - name: Create/update nightly tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_TAG: ${{ needs.release-metadata.outputs.immutable_tag }}
+          CHANNEL_TAG: ${{ needs.release-metadata.outputs.channel_tag }}
+          TARGET_SHA: ${{ needs.release-metadata.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${IMMUTABLE_TAG}" >/dev/null 2>&1; then
+            git tag -a "${IMMUTABLE_TAG}" "${TARGET_SHA}" -m "Nightly ${IMMUTABLE_TAG}"
+            git push origin "${IMMUTABLE_TAG}"
+          fi
+          git tag -f "${CHANNEL_TAG}" "${TARGET_SHA}"
+          git push --force origin "refs/tags/${CHANNEL_TAG}"
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Create or update nightly prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.immutable_tag }}
+          DATE_UTC: ${{ needs.release-metadata.outputs.date_utc }}
+          SHORT_SHA: ${{ needs.release-metadata.outputs.short_sha }}
+          DOCKER_VERSION_TAG: ${{ needs.release-metadata.outputs.docker_version_tag }}
+          HELM_VERSION: ${{ needs.release-metadata.outputs.helm_version }}
+          BASE_VERSION: ${{ needs.release-metadata.outputs.base_version }}
+        run: |
+          set -euo pipefail
+          notes_file="${RUNNER_TEMP}/nightly-release-notes.md"
+          cat > "${notes_file}" <<EOF
+          Nightly prerelease built from \`main\` for base version ${BASE_VERSION}.
+
+          - Date (UTC): ${DATE_UTC}
+          - Commit: ${SHORT_SHA}
+          - Package index policy: skip PyPI for nightly builds
+
+          ## Install / Run
+          \`\`\`bash
+          docker pull ghcr.io/${GITHUB_REPOSITORY}:${DOCKER_VERSION_TAG}
+          docker pull ghcr.io/${GITHUB_REPOSITORY}:nightly
+          helm install codex-lb oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts/codex-lb --version ${HELM_VERSION} --devel
+          \`\`\`
+          EOF
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" \
+              --title "Nightly ${DATE_UTC} (${SHORT_SHA})" \
+              --notes-file "${notes_file}" \
+              --prerelease
+          else
+            gh release create "${TAG}" \
+              --target "${{ needs.release-metadata.outputs.commit_sha }}" \
+              --title "Nightly ${DATE_UTC} (${SHORT_SHA})" \
+              --notes-file "${notes_file}" \
+              --prerelease
+          fi
+
+  summarize:
+    name: Nightly release summary
+    runs-on: ubuntu-24.04
+    needs: [release-metadata, docker-image, helm-chart, github-release]
+    if: always()
+
+    steps:
+      - name: Print nightly summary
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = {
+              name: details["result"]
+              for name, details in sorted(needs.items())
+              if details.get("result") not in {"success", "skipped"}
+          }
+          if failed:
+              for name, result in failed.items():
+                  print(f"{name}: {result}")
+              print("::error::nightly release workflow failed")
+              sys.exit(1)
+          print("nightly release workflow completed successfully")
+          PY

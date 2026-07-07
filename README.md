@@ -492,6 +492,13 @@ Fast Mode and service-tier behavior is documented in [Responses API compatibilit
 
 ## Development
 
+Minimum local toolchain:
+
+- Python 3.13 + [`uv`](https://docs.astral.sh/uv/)
+- Bun 1.3.x
+- Docker (required for image/build smoke)
+- Helm + kind (required for full `make ci` gate)
+
 ```bash
 # Docker
 docker compose watch
@@ -500,6 +507,10 @@ docker compose watch
 uv sync && cd frontend && bun install && cd ..
 uv run fastapi run app/main.py --reload        # backend :2455
 cd frontend && bun run dev                     # frontend :5173
+
+# Canonical validation gates
+make ci-fast   # day-to-day: lint/type/frontend/unit/package
+make ci        # full pre-release gate
 ```
 
 ## Contributors ✨
