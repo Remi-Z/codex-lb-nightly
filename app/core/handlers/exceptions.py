@@ -23,6 +23,7 @@ from app.core.exceptions import (
     DashboardPermissionError,
     DashboardRateLimitError,
     DashboardServiceUnavailableError,
+    DashboardUpstreamError,
     DashboardValidationError,
     ProxyAuthError,
     ProxyModelNotAllowed,
@@ -50,6 +51,7 @@ _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
     DashboardValidationError,
     DashboardRateLimitError,
     DashboardServiceUnavailableError,
+    DashboardUpstreamError,
 )
 
 
